@@ -1,5 +1,7 @@
 # Figma → Affinity (beta 0.2.0)
 
+![Figma → Affinity](docs/images/banner.png)
+
 Converts Figma designs into **editable** Affinity documents. Artboards, text, shapes, curves, images, masks, gradients, shadows and guides become native Affinity objects, not flattened images.
 
 Hướng dẫn tiếng Việt: see [HUONG-DAN.md](HUONG-DAN.md). The plugin and script interfaces are currently in Vietnamese; this file explains every step in English.
@@ -18,10 +20,19 @@ Download `figma-to-affinity-0.2.0-beta.zip` from the [Releases](https://github.c
 ### Step 1. Add the plugin to Figma
 
 1. Open the **Figma desktop app**. Plugins imported from a manifest only run in the desktop app, not in the browser.
-2. Open any design file.
-3. From the menu, choose **Plugins → Development → Import plugin from manifest…**
-4. Pick `manifest.json` inside `figma-plugin`. Keep `manifest.json`, `code.js` and `ui.html` together in the same folder.
-5. The plugin now lives under **Plugins → Development → Figma to Affinity (beta)**.
+2. Open any design file and follow the numbers in the screenshot:
+
+![Import from manifest in Figma](docs/images/figma-import.png)
+
+| # | What to do |
+|---|---|
+| 1 | Click **Actions** in the bottom toolbar. |
+| 2 | Open the **Plugins & widgets** tab. |
+| 3 | Click **Import from manifest…** and pick `manifest.json` inside `figma-plugin`. |
+
+Keep `manifest.json`, `code.js` and `ui.html` together in the same folder. After importing, **Figma to Affinity (beta)** shows up in the Plugins & widgets tab with a *Development* label.
+
+If you don't see Actions, use the main menu: **Plugins → Development → Import plugin from manifest…**
 
 ### Step 2. Turn on scripting and allow a folder in Affinity
 
@@ -46,28 +57,33 @@ This guide uses your **Desktop**, which is also where the plugin tells you to pu
 
 ### Step 3. Add the script to Affinity
 
-1. In Affinity, switch to **Scripting Studio**.
-2. Create a new script. Open `figaf-import.js` in a text editor (TextEdit, Notepad, VS Code…), copy **all** of it and paste it into the script.
-3. Save the script to your library so you can run it again later.
-4. Check the script's permissions:
+Open `figaf-import.js` in a text editor (TextEdit, Notepad, VS Code…) and copy **all** of it. Then in Affinity:
 
-![The script's File System permission](docs/images/affinity-gear.png)
+![Scripting Studio in Affinity](docs/images/affinity-studio.png)
 
 | # | What to do |
 |---|---|
-| 1 | Click the **gear icon** next to Run. |
-| 2 | Tick **File System** under *Script permissions*. It is already ticked if you turned on 3 in Step 2. |
-| 3 | **Run** starts the script (see Use below). |
+| 1 | Select the **Scripting** tab at the top. |
+| 2 | Click **New Script**. |
+| 3 | Paste the whole of `figaf-import.js` into the editor. |
+| 4 | Click the **gear icon** to check permissions (next screenshot). |
+| 5 | **Run** starts the script (see Use below). |
+
+The gear (4) opens the permissions menu:
+
+![The script's File System permission](docs/images/affinity-gear.png)
+
+Tick **File System** under *Script permissions* (number 2 in the screenshot). It is already ticked if you turned on *Access the file system* in Step 2.
 
 ## 2. Use
 
 1. **In Figma**, select one or more frames. Each frame becomes an artboard.
-2. Open **Plugins → Development → Figma to Affinity (beta)** and click the export button ("Xuất frame đang chọn"). The plugin shows what it exported and downloads a `.figaf` file, usually into Downloads.
+2. Open **Actions → Plugins & widgets → Figma to Affinity (beta)** and click the export button ("Xuất frame đang chọn"). The plugin shows what it exported and downloads a `.figaf` file, usually into Downloads.
 
    ![The plugin after an export](docs/images/figma-plugin.png)
 
 3. **Move the `.figaf` file to your Desktop**, or to the folder you allowed in Step 2. The script cannot read it from Downloads.
-4. **In Affinity**, open Scripting Studio, select the saved script and click **Run**. Pick the `.figaf` file when asked. A new document is created and a summary appears when it is done.
+4. **In Affinity**, open the Scripting tab, paste the script if it isn't there yet, and click **Run**. Pick the `.figaf` file when asked. A new document is created and a summary appears when it is done.
 5. Check the result and save it with **File → Save As** as `.af`.
 
 The script writes a report, `… - bao cao chuyen doi.txt`, to your Desktop. It lists missing fonts, failed layers, and anything skipped or simplified, with layer names so you can fix them by hand.
@@ -76,9 +92,9 @@ The script writes a report, `… - bao cao chuyen doi.txt`, to your Desktop. It 
 
 | Message | Fix |
 |---|---|
-| `PERMISSION_DENIED` or "Affinity không cho script đọc file" | The folder holding the `.figaf` file is not in list 4 from Step 2, or the script lacks **File System** permission (Step 3). Check both and run again. |
+| `PERMISSION_DENIED` or "Affinity không cho script đọc file" | The folder holding the `.figaf` file is not in list 4 from Step 2, or the script lacks **File System** permission (the gear in Step 3). Check both and run again. |
 | No Scripting section in Settings | Your Affinity is older than 3.3. Update Affinity. |
-| No Development menu in Figma | You are using Figma in a browser. Use the desktop app. |
+| No Import from manifest in Figma | You are using Figma in a browser. Use the desktop app. |
 
 ## 3. What converts
 
