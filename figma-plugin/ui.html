@@ -1,0 +1,118 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 16px; color: #222; }
+  h1 { font-size: 14px; margin: 0 0 8px; }
+  p { margin: 0 0 10px; color: #555; }
+  button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 0; background: #0d99ff; color: #fff; cursor: pointer; }
+  button[disabled] { opacity: .5; cursor: default; }
+  #status { margin-top: 12px; white-space: pre-wrap; max-height: 130px; overflow: auto; font-size: 12px; }
+  .err { color: #c0392b; }
+</style>
+</head>
+<body>
+  <h1>Figma → Affinity <span style="font-weight:400;color:#888">0.2.0-beta</span></h1>
+  <p>Chọn một hoặc nhiều frame rồi bấm Xuất. File <b>.figaf</b> sẽ được tải về; chép file đó ra <b>Desktop</b> rồi mở bằng script trong Affinity.</p>
+  <button id="go">Xuất frame đang chọn</button>
+  <div id="status"></div>
+<script>
+const MAX_IMAGE_SIDE = 4096;
+const statusEl = document.getElementById('status');
+const btn = document.getElementById('go');
+
+function setStatus(text, isErr) {
+  statusEl.textContent = text;
+  statusEl.className = isErr ? 'err' : '';
+}
+
+btn.onclick = function () {
+  btn.disabled = true;
+  setStatus('Đang đọc dữ liệu Figma…');
+  parent.postMessage({ pluginMessage: { type: 'export' } }, '*');
+};
+
+// Giải mã PNG/JPEG thành điểm ảnh RGBA thô (Affinity script không tự giải mã được PNG).
+async function decodeImage(bytes) {
+  const blob = new Blob([bytes]);
+  let w, h, draw;
+  if (window.createImageBitmap) {
+    const bmp = await createImageBitmap(blob);
+    w = bmp.width; h = bmp.height; draw = bmp;
+  } else {
+    const url = URL.createObjectURL(blob);
+    const img = await new Promise(function (resolve, reject) {
+      const im = new Image();
+      im.onload = function () { resolve(im); };
+      im.onerror = reject;
+      im.src = url;
+    });
+    w = img.naturalWidth; h = img.naturalHeight; draw = img;
+  }
+  const scale = Math.min(1, MAX_IMAGE_SIDE / Math.max(w, h));
+  const tw = Math.max(1, Math.round(w * scale)), th = Math.max(1, Math.round(h * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = tw; canvas.height = th;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(draw, 0, 0, tw, th);
+  const data = ctx.getImageData(0, 0, tw, th).data;
+  return { w: tw, h: th, origW: w, origH: h, pixels: new Uint8Array(data.buffer) };
+}
+
+async function buildFile(doc, images) {
+  const blobs = [];
+  let offset = 0;
+  for (let i = 0; i < images.length; i++) {
+    setStatus('Đang xử lý ảnh ' + (i + 1) + '/' + images.length + '…');
+    if (!images[i]) { doc.images.push(null); continue; }
+    try {
+      const dec = await decodeImage(images[i]);
+      doc.images.push({ w: dec.w, h: dec.h, origW: dec.origW, origH: dec.origH, offset: offset, length: dec.pixels.length });
+      blobs.push(dec.pixels);
+      offset += dec.pixels.length;
+    } catch (e) {
+      doc.images.push(null);
+      doc.warnings.push('Không giải mã được ảnh số ' + i + '.');
+    }
+  }
+  const json = new TextEncoder().encode(JSON.stringify(doc));
+  const header = new Uint8Array(10);
+  header.set([70, 73, 71, 65, 70, 49]); // "FIGAF1"
+  new DataView(header.buffer).setUint32(6, json.length, true);
+  return new Blob([header, json].concat(blobs), { type: 'application/octet-stream' });
+}
+
+window.onmessage = async function (event) {
+  const msg = event.data.pluginMessage;
+  if (!msg) return;
+  if (msg.type === 'progress') {
+    setStatus(msg.message);
+  } else if (msg.type === 'error') {
+    setStatus(msg.message, true);
+    btn.disabled = false;
+  } else if (msg.type === 'payload') {
+    try {
+      const blob = await buildFile(msg.doc, msg.images);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = msg.fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      const s = msg.doc.stats;
+      let summary = 'Đã xuất ' + msg.fileName + ' (' + (blob.size / 1048576).toFixed(1) + ' MB).\n' +
+        'Frame: ' + (s.frame || 0) + ', text: ' + (s.text || 0) + ', hình: ' + ((s.rect || 0) + (s.ellipse || 0) + (s.path || 0)) +
+        ', ảnh: ' + msg.doc.images.filter(Boolean).length + '.';
+      if (msg.doc.warnings.length) summary += '\n\nCảnh báo (' + msg.doc.warnings.length + '):\n- ' + msg.doc.warnings.slice(0, 30).join('\n- ');
+      setStatus(summary);
+      parent.postMessage({ pluginMessage: { type: 'done', fileName: msg.fileName } }, '*');
+    } catch (e) {
+      setStatus('Lỗi khi tạo file: ' + (e && e.message ? e.message : e), true);
+    }
+    btn.disabled = false;
+  }
+};
+</script>
+</body>
+</html>
