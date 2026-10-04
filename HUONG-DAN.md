@@ -11,29 +11,72 @@ Bộ công cụ gồm 2 phần:
 
 ## 1. Cài đặt (làm một lần)
 
-### Plugin Figma
+Tải file `figma-to-affinity-0.2.0-beta.zip` ở trang [Releases](https://github.com/nhaajtasnh/figma-to-affinity/releases) rồi giải nén. Bạn sẽ có thư mục `figma-plugin` và file `affinity-script/figaf-import.js`.
 
-1. Giải nén gói, giữ nguyên 3 file `manifest.json`, `code.js`, `ui.html` trong thư mục `figma-plugin`.
-2. Mở **Figma desktop app**. Plugin cài từ file chỉ chạy trên bản desktop, không chạy trên trình duyệt.
-3. Mở một file thiết kế bất kỳ, vào **Plugins → Development → Import plugin from manifest…** rồi chọn `manifest.json`.
-4. Plugin sẽ có trong **Plugins → Development → Figma to Affinity (beta)**.
+### Bước 1. Cài plugin vào Figma
 
-### Script Affinity
+1. Mở **Figma bản desktop**. Plugin cài từ file chỉ chạy trên bản desktop, không chạy trên trình duyệt.
+2. Mở một file thiết kế bất kỳ.
+3. Trên thanh menu, chọn **Plugins → Development → Import plugin from manifest…**
+4. Chọn file `manifest.json` trong thư mục `figma-plugin`. Giữ nguyên 3 file `manifest.json`, `code.js`, `ui.html` cùng một chỗ, đừng tách ra.
+5. Từ giờ plugin nằm ở **Plugins → Development → Figma to Affinity (beta)**.
 
-1. Mở Affinity, chuyển sang **Scripting Studio**.
-2. Tạo script mới, dán toàn bộ nội dung `figaf-import.js` vào rồi lưu vào thư viện script.
-3. Cấp quyền đọc file. Thiếu một trong hai bước này, script sẽ báo `PERMISSION_DENIED`:
-   - **Settings → Scripting → File System access**: thêm thư mục bạn sẽ đặt file `.figaf` vào (ví dụ Desktop). Danh sách này mặc định trống.
-   - Trong Scripting Studio, bấm **biểu tượng bánh răng** của script và bật quyền **File System**.
+### Bước 2. Bật scripting và cấp quyền thư mục trong Affinity
+
+Affinity chỉ cho script đọc file trong những thư mục bạn cho phép. Danh sách này mặc định **trống**, nên phải thêm thư mục trước, nếu không script sẽ báo `PERMISSION_DENIED`.
+
+Hướng dẫn này dùng **Desktop**, vì plugin cũng nhắc bạn đặt file ở đó. Bạn có thể chọn thư mục khác, miễn là sau này đặt file `.figaf` đúng vào thư mục ấy.
+
+1. Mở **Settings** của Affinity: trên Mac chọn menu **Affinity → Settings…** (phím tắt `⌘ ,`), trên Windows chọn **Edit → Settings…**
+2. Làm theo các số trong ảnh:
+
+![Settings → Scripting trong Affinity](docs/images/affinity-settings.png)
+
+| Số | Việc cần làm |
+|---|---|
+| ① | Chọn mục **Scripting** ở cột bên trái. |
+| ② | Bật **Enable Affinity Scripting**. |
+| ③ | Bật **Access the file system**. Script tạo mới sau đó sẽ có sẵn quyền đọc file. |
+| ④ | Đây là danh sách **File System access**. Lần đầu nó trống như trong ảnh. |
+| ⑤ | Bấm **Add**, chọn thư mục **Desktop** rồi bấm **Open**. Đường dẫn Desktop (ví dụ `/Users/ten-ban/Desktop`) sẽ hiện trong danh sách ④. |
+
+3. Đóng cửa sổ Settings.
+
+### Bước 3. Thêm script vào Affinity
+
+1. Trong Affinity, chuyển sang **Scripting Studio**.
+2. Tạo script mới, mở file `figaf-import.js` bằng một trình soạn thảo văn bản (TextEdit, Notepad, VS Code…), copy **toàn bộ** nội dung rồi dán vào script.
+3. Lưu script vào thư viện để lần sau chạy lại khỏi phải dán.
+4. Kiểm tra quyền của script:
+
+![Quyền File System của script](docs/images/affinity-gear.png)
+
+| Số | Việc cần làm |
+|---|---|
+| ① | Bấm **biểu tượng bánh răng** cạnh nút Run. |
+| ② | Đánh dấu **File System** trong mục *Script permissions*. Nếu đã bật ③ ở Bước 2 thì ô này đã được đánh dấu sẵn. |
+| ③ | Nút **Run** dùng để chạy script ở phần Sử dụng bên dưới. |
 
 ## 2. Sử dụng
 
-1. Trong Figma, chọn một hoặc nhiều frame. Mỗi frame sẽ thành một artboard.
-2. Chạy plugin, bấm **Xuất frame đang chọn**. Chép file `.figaf` vừa tải về vào thư mục đã cấp quyền ở bước cài đặt.
-3. Trong Affinity, chạy script và chọn file `.figaf`. Script tạo một document mới.
-4. Kiểm tra kết quả, rồi lưu bằng **File → Save As** ra file `.af`.
+1. **Trong Figma:** chọn một hoặc nhiều frame. Mỗi frame sẽ thành một artboard.
+2. Mở **Plugins → Development → Figma to Affinity (beta)** rồi bấm **Xuất frame đang chọn**. Plugin báo số frame, chữ, hình đã xuất và tải file `.figaf` về (thường vào thư mục Downloads).
+
+   ![Plugin sau khi xuất xong](docs/images/figma-plugin.png)
+
+3. **Chuyển file `.figaf` vào Desktop**, hoặc vào thư mục bạn đã thêm ở Bước 2. File nằm ở Downloads thì script không đọc được.
+4. **Trong Affinity:** mở Scripting Studio, chọn script vừa lưu rồi bấm **Run**. Chọn file `.figaf` khi được hỏi. Script tạo một document mới và hiện thông báo tóm tắt khi xong.
+5. Kiểm tra kết quả, rồi lưu bằng **File → Save As** ra file `.af`.
 
 Script ghi một file báo cáo `… - bao cao chuyen doi.txt` ra Desktop. Báo cáo liệt kê font máy chưa cài, layer bị lỗi, và những gì bị bỏ qua hoặc giản lược, kèm tên layer để bạn sửa tay.
+
+### Gặp lỗi khi chạy?
+
+| Thông báo | Cách sửa |
+|---|---|
+| `PERMISSION_DENIED` hoặc "Affinity không cho script đọc file" | Thư mục chứa file `.figaf` chưa có trong danh sách ④ ở Bước 2, hoặc script chưa bật **File System** (Bước 3). Kiểm tra cả hai, rồi chạy lại. |
+| Không thấy mục Scripting trong Settings | Bạn đang dùng bản Affinity cũ hơn 3.3. Hãy cập nhật Affinity. |
+| Không thấy menu Development trong Figma | Bạn đang mở Figma trên trình duyệt. Hãy dùng Figma bản desktop. |
 
 ## 3. Những gì được chuyển
 
