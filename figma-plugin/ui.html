@@ -427,8 +427,10 @@ var IDML = (function () {
         return null;
       }
       // Figma đặt dòng đầu ở giữa chiều cao dòng; IDML đặt theo khoảng cách baseline cố định.
+      // Figma đặt dòng đầu giữa chiều cao dòng; IDML (AscentOffset) đặt baseline đầu ngay dưới đỉnh khung.
+      // Dời khung xuống phần chênh nửa leading để dòng đầu nằm đúng chỗ như Figma.
       var L0 = leading(first) || first.size * 1.2;
-      var baseline = (L0 - first.size * 1.2) / 2 + first.size * 0.95;
+      var halfLead = (L0 - first.size * 1.2) / 2;
 
       // Chia thành các đoạn theo ký tự xuống dòng, mỗi đoạn gồm các đoạn chữ cùng style.
       var paras = [[]];
@@ -479,13 +481,14 @@ var IDML = (function () {
       if (vj === 'TopAlign' && auto !== 'TRUNCATE') h = h + (leading(first) || first.size * 1.2) * 0.5;
       var autosize = auto === 'WIDTH_AND_HEIGHT' ? ' AutoSizingType="HeightAndWidth" AutoSizingReferencePoint="' + ({ CENTER: 'TopCenterPoint', RIGHT: 'TopRightPoint' }[t.alignH] || 'TopLeftPoint') + '" UseNoLineBreaksForAutoSizing="true"' :
         auto === 'HEIGHT' ? ' AutoSizingType="HeightOnly" AutoSizingReferencePoint="TopCenterPoint"' : ' AutoSizingType="Off"';
+      if (vj === 'TopAlign' && halfLead) local = mul(local, [[1, 0, 0], [0, 1, halfLead]]);
       if (auto === 'WIDTH_AND_HEIGHT' && t.alignH === 'RIGHT') local = mul(local, [[1, 0, node.w - w], [0, 1, 0]]);
       if (auto === 'WIDTH_AND_HEIGHT' && t.alignH === 'CENTER') local = mul(local, [[1, 0, (node.w - w) / 2], [0, 1, 0]]);
       var x = '<TextFrame Self="' + uid('tf') + '" Name="' + esc(node.name || '') + '" ParentStory="' + storyId + '" PreviousTextFrame="n" NextTextFrame="n" ContentType="TextType" ItemLayer="layer1" Visible="' + (node.visible === false ? 'false' : 'true') + '"' +
         ' AppliedObjectStyle="ObjectStyle/$ID/[None]" FillColor="Swatch/None" StrokeColor="Swatch/None" StrokeWeight="0" ItemTransform="' + mat(local) + '">';
       x += pathPointsXml(rectPts(w, h));
       x += transparencyXml(node, 1, 1, true);
-      x += '<TextFramePreference TextColumnCount="1" FirstBaselineOffset="FixedHeight" MinimumFirstBaselineOffset="' + n(baseline) + '" VerticalJustification="' + vj + '"' + autosize + '>' +
+      x += '<TextFramePreference TextColumnCount="1" FirstBaselineOffset="AscentOffset" MinimumFirstBaselineOffset="0" VerticalJustification="' + vj + '"' + autosize + '>' +
         '<Properties><InsetSpacing type="list"><ListItem type="unit">0</ListItem><ListItem type="unit">0</ListItem><ListItem type="unit">0</ListItem><ListItem type="unit">0</ListItem></InsetSpacing></Properties></TextFramePreference>';
       return x + '</TextFrame>';
     }
@@ -558,10 +561,10 @@ var IDML = (function () {
       var guides = '';
       if (opts.guides !== false && root.guides) {
         (root.guides.v || []).forEach(function (x) {
-          guides += '<Guide Self="' + uid('gd') + '" OverriddenPageItemProps="" Orientation="Vertical" Location="' + n(x - root.m[0][2] - W / 2) + '" FitToPage="true" ViewThreshold="0" Locked="false" ItemLayer="layer1" PageIndex="0" GuideType="Ruler" GuideZone="0"/>';
+          guides += '<Guide Self="' + uid('gd') + '" OverriddenPageItemProps="" Orientation="Vertical" Location="' + n(x - root.m[0][2]) + '" FitToPage="true" ViewThreshold="0" Locked="false" ItemLayer="layer1" PageIndex="0" GuideType="Ruler" GuideZone="0"/>';
         });
         (root.guides.h || []).forEach(function (y) {
-          guides += '<Guide Self="' + uid('gd') + '" OverriddenPageItemProps="" Orientation="Horizontal" Location="' + n(y - root.m[1][2] - H / 2) + '" FitToPage="true" ViewThreshold="0" Locked="false" ItemLayer="layer1" PageIndex="0" GuideType="Ruler" GuideZone="0"/>';
+          guides += '<Guide Self="' + uid('gd') + '" OverriddenPageItemProps="" Orientation="Horizontal" Location="' + n(y - root.m[1][2]) + '" FitToPage="true" ViewThreshold="0" Locked="false" ItemLayer="layer1" PageIndex="0" GuideType="Ruler" GuideZone="0"/>';
         });
       }
       var sid = 'sp' + (i + 1);
@@ -569,9 +572,9 @@ var IDML = (function () {
       var xml = '<Spread Self="' + sid + '" PageCount="1" BindingLocation="0" AllowPageShuffle="true" ItemTransform="1 0 0 1 0 0" ShowMasterItems="true" PageTransitionType="None">' +
         '<FlattenerPreference LineArtAndTextResolution="300" GradientAndMeshResolution="150" ClipComplexRegions="false" ConvertAllStrokesToOutlines="false" ConvertAllTextToOutlines="false"><Properties><RasterVectorBalance type="double">50</RasterVectorBalance></Properties></FlattenerPreference>' +
         '<Page Self="' + pid + '" Name="' + esc(root.name || String(i + 1)) + '" AppliedTrapPreset="TrapPreset/$ID/kDefaultTrapStyleName" AppliedMaster="n" OverrideList="" TabOrder="" GridStartingPoint="TopOutside" UseMasterGrid="true" GeometricBounds="0 0 ' + n(H) + ' ' + n(W) + '" ItemTransform="1 0 0 1 ' + n(-W / 2) + ' ' + n(-H / 2) + '" MasterPageTransform="1 0 0 1 0 0">' +
-        '<Properties><PageColor type="enumeration">UseMasterColor</PageColor></Properties>' +
+        '<Properties><PageColor type="enumeration">UseMasterColor</PageColor></Properties>' + guides +
         '<MarginPreference ColumnCount="1" ColumnGutter="0" Top="0" Bottom="0" Left="0" Right="0" ColumnDirection="Horizontal" ColumnsPositions="0 ' + n(W) + '"/></Page>' +
-        pageItems + guides + '</Spread>';
+        pageItems + '</Spread>';
       spreads.push({ id: sid, xml: xml });
     });
 
@@ -702,8 +705,24 @@ function download(blob, name) {
 }
 
 // Bản thử: dựng file .idml ngay trong plugin, Affinity mở bằng File → Open.
-function exportIdml(msg) {
-  const res = IDML.build(msg.doc, msg.images, {});
+// IDML chỉ nhúng được PNG/JPEG/GIF: ảnh định dạng khác (WebP…) được chuyển sang PNG.
+async function toPng(bytes) {
+  const bmp = await createImageBitmap(new Blob([bytes]));
+  const c = document.createElement('canvas');
+  c.width = bmp.width; c.height = bmp.height;
+  c.getContext('2d').drawImage(bmp, 0, 0);
+  const blob = await new Promise(function (r) { c.toBlob(r, 'image/png'); });
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+async function exportIdml(msg) {
+  const images = [];
+  for (const b of msg.images) {
+    if (b && !IDML.imageInfo(b)) {
+      try { images.push(await toPng(b)); } catch (e) { images.push(b); }
+    } else images.push(b);
+  }
+  const res = IDML.build(msg.doc, images, {});
   const name = msg.fileName.replace(/\.figaf$/, '') + '.idml';
   download(new Blob([res.idml], { type: 'application/vnd.adobe.indesign-idml-package' }), name);
   const s = msg.doc.stats;
@@ -776,7 +795,7 @@ window.onmessage = async function (event) {
     btn.disabled = btnIdml.disabled = false;
   } else if (msg.type === 'payload') {
     if (mode === 'idml') {
-      try { exportIdml(msg); } catch (e) { setStatus('Lỗi khi tạo file IDML: ' + (e && e.message ? e.message : e), true); }
+      try { await exportIdml(msg); } catch (e) { setStatus('Lỗi khi tạo file IDML: ' + (e && e.message ? e.message : e), true); }
       btn.disabled = btnIdml.disabled = false;
       return;
     }
