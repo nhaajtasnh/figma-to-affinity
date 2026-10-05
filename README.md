@@ -75,6 +75,17 @@ The gear (4) opens the permissions menu:
 
 Tick **File System** under *Script permissions* (number 2 in the screenshot). It is already ticked if you turned on *Access the file system* in Step 2.
 
+### Alternative to Step 3: Script Manager for Affinity
+
+Instead of copying and pasting, you can use [Script Manager for Affinity](https://github.com/JiriKrblich/Affinity-script-manager) (free, open source) to install the script and get updates when a new version ships.
+
+1. Install Script Manager as its repo describes. On a Mac, the first launch is blocked: open **System Settings → Privacy & Security** and click **Open Anyway**.
+2. In Affinity: enable **MCP** in Settings and allow it to save scripts, open **Window → General → Scripts**, and create any category (for example `My Scripts`). Script Manager needs these.
+3. In Script Manager, open **Community → Repositories**, paste `https://github.com/nhaajtasnh/figma-to-affinity` and click **Add Repo**.
+4. Click **Install** on **Figma → Affinity (beta)**. The script appears in Affinity's Scripts panel.
+
+Script Manager only replaces the copy and paste. **Step 2 is still required**: the folder holding your `.figaf` file must be in the File System access list, and the script still needs File System permission.
+
 ## 2. Use
 
 1. **In Figma**, select one or more frames. Each frame becomes an artboard.

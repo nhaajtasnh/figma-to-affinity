@@ -73,6 +73,17 @@ Khi bấm bánh răng ④, menu quyền hiện ra:
 
 Đánh dấu **File System** trong mục *Script permissions* (số ② trong ảnh). Nếu đã bật *Access the file system* ở Bước 2 thì ô này đã được đánh dấu sẵn.
 
+### Cách khác cho Bước 3: dùng Script Manager for Affinity
+
+Nếu không muốn copy dán script, bạn có thể dùng app [Script Manager for Affinity](https://github.com/JiriKrblich/Affinity-script-manager) (miễn phí, mã nguồn mở) để cài và tự cập nhật script khi có bản mới.
+
+1. Cài Script Manager theo hướng dẫn trong repo của app. Trên Mac, lần đầu mở app sẽ bị chặn, vào **System Settings → Privacy & Security** và bấm **Open Anyway**.
+2. Trong Affinity: bật **MCP** trong Settings và cho phép MCP lưu script, mở **Window → General → Scripts**, rồi tạo một category bất kỳ (ví dụ `My Scripts`). Đây là yêu cầu của Script Manager.
+3. Trong Script Manager, mở tab **Community → Repositories**, dán link `https://github.com/nhaajtasnh/figma-to-affinity` rồi bấm **Add Repo**.
+4. Bấm **Install** ở thẻ **Figma → Affinity (beta)**. Script sẽ xuất hiện trong panel Scripts của Affinity.
+
+Script Manager chỉ thay phần copy dán. **Bước 2 vẫn bắt buộc**: Affinity vẫn cần thư mục chứa file `.figaf` nằm trong danh sách File System access, và script vẫn cần quyền File System.
+
 ## 2. Sử dụng
 
 1. **Trong Figma:** chọn một hoặc nhiều frame. Mỗi frame sẽ thành một artboard.

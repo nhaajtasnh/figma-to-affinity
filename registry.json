@@ -1,0 +1,15 @@
+{
+  "scripts": [
+    {
+      "id": "figma-to-affinity",
+      "name": "Figma → Affinity (beta)",
+      "description": "Opens a .figaf file exported by the Figma to Affinity plugin and rebuilds it as an editable Affinity document.",
+      "version": "0.2.0-beta",
+      "author": "Đình Collective",
+      "category": "Import",
+      "image": "docs/images/banner.png",
+      "url": "https://github.com/nhaajtasnh/figma-to-affinity",
+      "download_url": "https://raw.githubusercontent.com/nhaajtasnh/figma-to-affinity/main/affinity-script/figaf-import.js"
+    }
+  ]
+}
