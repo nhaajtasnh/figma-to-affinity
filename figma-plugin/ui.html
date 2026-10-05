@@ -163,7 +163,6 @@ var IDML = (function () {
       var type = p.type === 'LINEAR' ? 'Linear' : 'Radial';
       if (p.type === 'ANGULAR') warn(node, 'gradient góc (angular) trong IDML được chuyển thành gradient tròn.');
       var stops = p.stops.slice().sort(function (a, b) { return a.pos - b.pos; });
-      if (stops.some(function (s) { return s.a < 0.999; })) warn(node, 'IDML không có độ trong suốt riêng từng điểm màu của gradient, đã bỏ phần trong suốt.');
       var xml = '<Gradient Self="' + id + '" Type="' + type + '" Name="' + id.slice(9) + '" ColorEditable="true" ColorRemovable="true" Visible="true" SwatchCreatorID="7937">';
       stops.forEach(function (s) {
         xml += '<GradientStop Self="' + id + 's' + uid('') + '" StopColor="' + esc(color(s)) + '" Location="' + n(s.pos * 100) + '" Midpoint="50"/>';
@@ -213,9 +212,15 @@ var IDML = (function () {
         var dx = le[0] - ls[0], dy = le[1] - ls[1];
         var len = Math.sqrt(dx * dx + dy * dy);
         var ang = -Math.atan2(dy, dx) * 180 / Math.PI;
+        // Điểm màu trong suốt: IDML không có alpha trong gradient, dùng hiệu ứng Gradient Feather cùng hướng để làm mờ dần.
+        var feather = paint.stops.some(function (st) { return st.a < 0.999; }) ? {
+          type: paint.type === 'LINEAR' ? 'Linear' : 'Radial', start: ls, len: len, ang: ang,
+          stops: paint.stops.slice().sort(function (a, b) { return a.pos - b.pos; })
+        } : null;
         return {
           attrs: ' FillColor="' + g + '" GradientFillStart="' + n(ls[0]) + ' ' + n(ls[1]) + '" GradientFillLength="' + n(len) + '" GradientFillAngle="' + n(ang) + '"',
-          fillAlpha: paint.opacity === undefined ? 1 : paint.opacity
+          fillAlpha: paint.opacity === undefined ? 1 : paint.opacity,
+          feather: feather
         };
       }
       return { attrs: ' FillColor="Swatch/None"', fillAlpha: 1 };
@@ -238,7 +243,7 @@ var IDML = (function () {
     }
 
     // Hiệu ứng + độ trong suốt: các phần tử con của page item.
-    function transparencyXml(node, fillAlpha, strokeAlpha, withEffects) {
+    function transparencyXml(node, fillAlpha, strokeAlpha, withEffects, feather) {
       var x = '';
       var op = node.opacity === undefined ? 1 : node.opacity;
       var drop = null, inner = null;
@@ -265,11 +270,17 @@ var IDML = (function () {
         }
         return '<InnerShadowSetting Applied="true"' + common + ' ChokeAmount="' + n(e.radius ? Math.min(100, (e.spread || 0) / e.radius * 100) : 0) + '"/>';
       }
-      if (op < 0.999 || drop || inner || bm) {
+      function featherXml(f) {
+        return '<GradientFeatherSetting Applied="true" Type="' + f.type + '" Angle="' + n(f.ang) + '" Length="' + n(f.len) + '" GradientStart="' + n(f.start[0]) + ' ' + n(f.start[1]) + '" HiliteAngle="0" HiliteLength="0">' +
+          f.stops.map(function (st) { return '<OpacityGradientStop Opacity="' + n(st.a * 100) + '" Location="' + n(st.pos * 100) + '" Midpoint="50"/>'; }).join('') +
+          '</GradientFeatherSetting>';
+      }
+      if (op < 0.999 || drop || inner || bm || feather) {
         x += '<TransparencySetting>';
         if (op < 0.999 || bm) x += '<BlendingSetting' + (bm ? ' BlendMode="' + bm + '"' : '') + ' Opacity="' + n(op * 100) + '"/>';
         if (drop) x += shadowXml('DropShadowSetting', drop);
         if (inner) x += shadowXml('InnerShadowSetting', inner);
+        if (feather) x += featherXml(feather);
         x += '</TransparencySetting>';
       }
       if (fillAlpha < 0.999) x += '<FillTransparencySetting><BlendingSetting Opacity="' + n(fillAlpha * 100) + '"/></FillTransparencySetting>';
@@ -398,7 +409,7 @@ var IDML = (function () {
         ' ContentType="' + (paint && paint.type === 'IMAGE' ? 'GraphicType' : 'Unassigned') + '" AppliedObjectStyle="ObjectStyle/$ID/[None]"' +
         f.attrs + st.attrs + (geo.kind === 'rect' ? cornerAttrs(geo.radius) : '') + ' ItemTransform="' + mat(local) + '">';
       x += pathPointsXml(sub);
-      x += transparencyXml(node, f.fillAlpha, st.alpha, withEffects);
+      x += transparencyXml(node, f.fillAlpha, st.alpha, withEffects, f.feather);
       if (paint && paint.type === 'IMAGE') x += imageXml(node, paint, geo.w, geo.h, geo.kind === 'path' && geo.m ? mul(inv(abs), geo.m) : null);
       if (inside) x += inside;
       return x + '</' + tag + '>';
@@ -428,6 +439,16 @@ var IDML = (function () {
       var geo = geoOf(node);
       var abs = geo.kind === 'path' ? I : relM(node);
       var fills = node.fills || [];
+      var drops = (node.effects || []).filter(function (e) { return e.type === 'DROP_SHADOW'; });
+      if (drops.length > 1) {
+        // IDML chỉ có một bóng đổ mỗi layer: mỗi bóng thêm là một bản sao nằm dưới, chỉ mang bóng đó.
+        var rest = (node.effects || []).filter(function (e) { return e.type !== 'DROP_SHADOW'; });
+        var under = drops.slice(1).map(function (e, i) {
+          return leafXml(Object.assign({}, node, { effects: [e], opacity: 1, blendMode: null, strokes: null, name: node.name + ' (bóng ' + (i + 2) + ')' }), I, '');
+        }).join('');
+        var main = leafXml(Object.assign({}, node, { effects: [drops[0]].concat(rest), opacity: 1, blendMode: null }), I, inside);
+        return groupXml(node.name, parentAbs, under + main, Object.assign({}, node, { effects: [] }));
+      }
       if (node.strokes && node.strokes.length > 1) {
         // Nhiều lớp viền: hình gốc mang lớp viền dưới cùng, mỗi lớp viền còn lại là một bản sao chỉ có viền đặt lên trên.
         var plainFx = { effects: [], opacity: 1, blendMode: null };
