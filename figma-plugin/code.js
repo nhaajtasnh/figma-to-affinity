@@ -52,6 +52,57 @@ function invert(t) {
 
 // Phân tích path SVG (Figma dùng M L Q C Z, có thể có H V) và đổi sang toạ độ tuyệt đối trên page.
 // Kết quả: [['M',x,y], ['L',x,y], ['C',x1,y1,x2,y2,x,y], ['Z']]
+// Bo tròn góc giữa các đoạn thẳng của path (giống cornerRadius của vector trong Figma).
+// cmds: [['M',x,y],['L',x,y],...,['Z']] — đoạn cong giữ nguyên, chỉ bo những đỉnh nằm giữa hai đoạn thẳng.
+function roundCorners(cmds, r) {
+  const out = [];
+  let i = 0;
+  while (i < cmds.length) {
+    if (cmds[i][0] !== 'M') { out.push(cmds[i]); i++; continue; }
+    // gom một subpath
+    let j = i + 1;
+    while (j < cmds.length && cmds[j][0] !== 'M') j++;
+    const sub = cmds.slice(i, j);
+    i = j;
+    const closed = sub[sub.length - 1][0] === 'Z';
+    const body = closed ? sub.slice(0, -1) : sub;
+    if (!body.slice(1).every(function (c) { return c[0] === 'L'; }) || body.length < 3) { out.push.apply(out, sub); continue; }
+    const pts = body.map(function (c) { return [c[1], c[2]]; });
+    if (closed && pts.length > 2) {
+      const f = pts[0], l = pts[pts.length - 1];
+      if (Math.abs(f[0] - l[0]) < 1e-6 && Math.abs(f[1] - l[1]) < 1e-6) pts.pop();
+    }
+    const n = pts.length;
+    const corner = []; // mỗi đỉnh: null (không bo) hoặc {s, c1, c2, e}
+    for (let k = 0; k < n; k++) {
+      if (!closed && (k === 0 || k === n - 1)) { corner.push(null); continue; }
+      const P = pts[k], A = pts[(k - 1 + n) % n], B = pts[(k + 1) % n];
+      const ax = A[0] - P[0], ay = A[1] - P[1], bx = B[0] - P[0], by = B[1] - P[1];
+      const d1 = Math.hypot(ax, ay), d2 = Math.hypot(bx, by);
+      if (d1 < 1e-6 || d2 < 1e-6) { corner.push(null); continue; }
+      const ux = ax / d1, uy = ay / d1, vx = bx / d2, vy = by / d2;
+      const cos = Math.max(-1, Math.min(1, ux * vx + uy * vy));
+      const th = Math.acos(cos); // góc trong
+      if (th > Math.PI - 1e-3 || th < 1e-3) { corner.push(null); continue; }
+      let t = r / Math.tan(th / 2);
+      t = Math.min(t, d1 / 2, d2 / 2);
+      const re = t * Math.tan(th / 2);
+      const k4 = 4 / 3 * Math.tan((Math.PI - th) / 4) * re;
+      const S = [P[0] + ux * t, P[1] + uy * t], E = [P[0] + vx * t, P[1] + vy * t];
+      corner.push({ s: S, e: E, c1: [S[0] - ux * k4, S[1] - uy * k4], c2: [E[0] - vx * k4, E[1] - vy * k4] });
+    }
+    const first = corner[0] ? corner[0].e : pts[0];
+    out.push(['M', first[0], first[1]]);
+    for (let k = 1; k < n + (closed ? 1 : 0); k++) {
+      const idx = k % n, c = corner[idx];
+      if (c) { out.push(['L', c.s[0], c.s[1]]); out.push(['C', c.c1[0], c.c1[1], c.c2[0], c.c2[1], c.e[0], c.e[1]]); }
+      else out.push(['L', pts[idx][0], pts[idx][1]]);
+    }
+    if (closed) out.push(['Z']);
+  }
+  return out;
+}
+
 function parsePath(d, m) {
   const tokens = d.match(/[MmLlHhVvCcSsQqTtZz]|-?\d*\.?\d+(?:e[-+]?\d+)?/g) || [];
   const out = [];
@@ -442,6 +493,12 @@ function serialize(node, asMask) {
         out.paths = node.vectorPaths.map(function (vp) {
           return { winding: vp.windingRule, open: !/z\s*$/i.test(vp.data), cmds: parsePath(vp.data, node.absoluteTransform) };
         });
+        // vectorPaths không gồm bo góc của vector (Figma bo khi vẽ): tự bo các góc giữa hai đoạn thẳng.
+        const cr = typeof node.cornerRadius === 'number' ? node.cornerRadius : 0;
+        if (cr > 0) {
+          const sc = Math.sqrt(Math.abs(node.absoluteTransform[0][0] * node.absoluteTransform[1][1] - node.absoluteTransform[0][1] * node.absoluteTransform[1][0]));
+          out.paths.forEach(function (p) { p.cmds = roundCorners(p.cmds, cr * sc); });
+        }
       } else {
         out.paths = geometryPaths(node.fillGeometry, node.absoluteTransform);
         if (!out.paths.length && out.strokes) {

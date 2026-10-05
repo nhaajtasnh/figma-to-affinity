@@ -261,8 +261,10 @@ var IDML = (function () {
       }
       function shadowXml(tag, e) {
         var dist = Math.sqrt(e.offset.x * e.offset.x + e.offset.y * e.offset.y);
-        var ang = dist ? -Math.atan2(e.offset.y, e.offset.x) * 180 / Math.PI : 90;
-        var common = ' BlendMode="Multiply" Opacity="' + n(e.color.a * 100) + '" Size="' + n(e.radius) + '" Distance="' + n(dist) + '" Angle="' + n(ang) +
+        // Angle là hướng nguồn sáng (ngược hướng bóng), trục y hướng lên: bóng lệch xuống = 90°.
+        // Affinity chỉ đọc Angle + Distance, bỏ qua XOffset/YOffset (đã thử trên Affinity 3.3).
+        var ang = dist ? Math.atan2(e.offset.y, -e.offset.x) * 180 / Math.PI : 90;
+        var common = ' BlendMode="Multiply" Opacity="' + n(e.color.a * 100) + '" Size="' + n(Math.max(e.radius, 0.5)) + '" Distance="' + n(dist) + '" Angle="' + n(ang) +
           '" EffectColor="' + esc(color(e.color)) + '" UseGlobalLight="false"';
         if (tag === 'DropShadowSetting') {
           // Figma mặc định không vẽ bóng phía sau phần trong suốt của layer ("Object knocks out shadow").
@@ -439,6 +441,23 @@ var IDML = (function () {
       var geo = geoOf(node);
       var abs = geo.kind === 'path' ? I : relM(node);
       var fills = node.fills || [];
+      var hard = (node.effects || []).filter(function (e) { return e.type === 'DROP_SHADOW' && !(e.radius > 0.5); });
+      if (hard.length) {
+        // Bóng đổ không nhoè (blur 0): Affinity không vẽ, nên dựng thành bản sao màu bóng, dời theo offset, nằm dưới.
+        var copies = hard.map(function (e, i) {
+          var c = JSON.parse(JSON.stringify(node));
+          var col = { type: 'SOLID', r: e.color.r, g: e.color.g, b: e.color.b, a: 1 };
+          var hasFill = (c.fills || []).length > 0;
+          c.fills = hasFill ? [col] : [];
+          c.strokes = c.strokes && c.strokes.length ? [col] : null;
+          if (!hasFill && !c.strokes) return '';
+          c.effects = []; c.opacity = e.color.a; c.blendMode = null; c.name = node.name + ' (bóng ' + (i + 1) + ')';
+          transformTree(c, [[1, 0, e.offset.x], [0, 1, e.offset.y]]);
+          return leafXml(c, I, '');
+        }).join('');
+        var soft = Object.assign({}, node, { effects: (node.effects || []).filter(function (e) { return hard.indexOf(e) < 0; }), opacity: 1, blendMode: null });
+        return groupXml(node.name, parentAbs, copies + leafXml(soft, I, inside), Object.assign({}, node, { effects: [] }));
+      }
       var drops = (node.effects || []).filter(function (e) { return e.type === 'DROP_SHADOW'; });
       if (drops.length > 1) {
         // IDML chỉ có một bóng đổ mỗi layer: mỗi bóng thêm là một bản sao nằm dưới, chỉ mang bóng đó.
