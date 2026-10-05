@@ -500,7 +500,15 @@ var IDML = (function () {
       // Chừa thêm chút chiều rộng để chữ không bị ngắt dòng do font đo hơi khác.
       // Affinity không tự co giãn khung chữ theo IDML, và font đo hơi khác Figma: chừa thêm chỗ để chữ không bị mất.
       if (auto === 'WIDTH_AND_HEIGHT') w = w + Math.max(4, w * 0.15, first.size);
-      if (vj === 'TopAlign' && auto !== 'TRUNCATE') h = h + (leading(first) || first.size * 1.2) * 0.5;
+      // Khung thấp hơn một dòng chữ (Figma vẫn vẽ chữ tràn ra) thì Affinity giấu chữ đi: nới khung đủ cao,
+      // giữ nguyên cạnh mà chữ bám theo (trên, giữa hoặc dưới).
+      if (auto !== 'TRUNCATE') {
+        var needH = Math.max(h, L0 * paras.length) + L0 * 0.5;
+        var dh = needH - h;
+        h = needH;
+        if (vj === 'BottomAlign') local = mul(local, [[1, 0, 0], [0, 1, -dh]]);
+        else if (vj === 'CenterAlign') local = mul(local, [[1, 0, 0], [0, 1, -dh / 2]]);
+      }
       var autosize = auto === 'WIDTH_AND_HEIGHT' ? ' AutoSizingType="HeightAndWidth" AutoSizingReferencePoint="' + ({ CENTER: 'TopCenterPoint', RIGHT: 'TopRightPoint' }[t.alignH] || 'TopLeftPoint') + '" UseNoLineBreaksForAutoSizing="true"' :
         auto === 'HEIGHT' ? ' AutoSizingType="HeightOnly" AutoSizingReferencePoint="TopCenterPoint"' : ' AutoSizingType="Off"';
       if (vj === 'TopAlign' && halfLead) local = mul(local, [[1, 0, 0], [0, 1, halfLead]]);
