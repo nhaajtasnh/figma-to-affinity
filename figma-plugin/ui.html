@@ -223,7 +223,7 @@ var IDML = (function () {
 
     function strokeAttrs(node) {
       if (!node.strokes || !node.strokes.length || !node.strokeWeight) return { attrs: ' StrokeColor="Swatch/None" StrokeWeight="0"', alpha: 1 };
-      var s = node.strokes[0];
+      var s = node.strokes[node.strokes.length - 1]; // lớp cuối là lớp trên cùng
       if (node.strokes.length > 1) warn(node, 'nhiều lớp viền, chỉ giữ lớp trên cùng.');
       var col = s.type === 'SOLID' ? color(s) : (s.stops ? color(s.stops[0]) : 'Color/Black');
       var alpha = s.type === 'SOLID' ? s.a : 1;
@@ -242,6 +242,11 @@ var IDML = (function () {
       var x = '';
       var op = node.opacity === undefined ? 1 : node.opacity;
       var drop = null, inner = null;
+      var BM = { MULTIPLY: 'Multiply', SCREEN: 'Screen', OVERLAY: 'Overlay', SOFT_LIGHT: 'SoftLight', HARD_LIGHT: 'HardLight', COLOR_DODGE: 'ColorDodge',
+        COLOR_BURN: 'ColorBurn', DARKEN: 'Darken', LIGHTEN: 'Lighten', DIFFERENCE: 'Difference', EXCLUSION: 'Exclusion', HUE: 'Hue',
+        SATURATION: 'Saturation', COLOR: 'Color', LUMINOSITY: 'Luminosity' };
+      var bm = withEffects && node.blendMode ? BM[node.blendMode] : null;
+      if (withEffects && node.blendMode && !bm) warn(node, 'blend mode ' + node.blendMode + ' không có trong IDML, dùng Normal.');
       if (withEffects) {
         (node.effects || []).forEach(function (e) {
           if (e.type === 'DROP_SHADOW') { if (!drop) drop = e; else warn(node, 'IDML chỉ có một bóng đổ mỗi layer, bỏ các bóng còn lại.'); }
@@ -255,13 +260,14 @@ var IDML = (function () {
         var common = ' BlendMode="Multiply" Opacity="' + n(e.color.a * 100) + '" Size="' + n(e.radius) + '" Distance="' + n(dist) + '" Angle="' + n(ang) +
           '" EffectColor="' + esc(color(e.color)) + '" UseGlobalLight="false"';
         if (tag === 'DropShadowSetting') {
-          return '<DropShadowSetting Mode="Drop"' + common + ' XOffset="' + n(e.offset.x) + '" YOffset="' + n(e.offset.y) + '" Spread="' + n(e.radius ? Math.min(100, (e.spread || 0) / e.radius * 100) : 0) + '"/>';
+          // Figma mặc định không vẽ bóng phía sau phần trong suốt của layer ("Object knocks out shadow").
+          return '<DropShadowSetting Mode="Drop"' + common + ' KnockedOut="' + (e.behind ? 'false' : 'true') + '" XOffset="' + n(e.offset.x) + '" YOffset="' + n(e.offset.y) + '" Spread="' + n(e.radius ? Math.min(100, (e.spread || 0) / e.radius * 100) : 0) + '"/>';
         }
         return '<InnerShadowSetting Applied="true"' + common + ' ChokeAmount="' + n(e.radius ? Math.min(100, (e.spread || 0) / e.radius * 100) : 0) + '"/>';
       }
-      if (op < 0.999 || drop || inner) {
+      if (op < 0.999 || drop || inner || bm) {
         x += '<TransparencySetting>';
-        if (op < 0.999) x += '<BlendingSetting Opacity="' + n(op * 100) + '"/>';
+        if (op < 0.999 || bm) x += '<BlendingSetting' + (bm ? ' BlendMode="' + bm + '"' : '') + ' Opacity="' + n(op * 100) + '"/>';
         if (drop) x += shadowXml('DropShadowSetting', drop);
         if (inner) x += shadowXml('InnerShadowSetting', inner);
         x += '</TransparencySetting>';
@@ -422,6 +428,15 @@ var IDML = (function () {
       var geo = geoOf(node);
       var abs = geo.kind === 'path' ? I : relM(node);
       var fills = node.fills || [];
+      if (node.strokes && node.strokes.length > 1) {
+        // Nhiều lớp viền: hình gốc mang lớp viền dưới cùng, mỗi lớp viền còn lại là một bản sao chỉ có viền đặt lên trên.
+        var plainFx = { effects: [], opacity: 1, blendMode: null };
+        var parts = leafXml(Object.assign({}, node, plainFx, { strokes: [node.strokes[0]] }), I, inside);
+        node.strokes.slice(1).forEach(function (s, i) {
+          parts += leafXml(Object.assign({}, node, plainFx, { fills: [], strokes: [s], name: node.name + ' (viền ' + (i + 2) + ')' }), I, '');
+        });
+        return groupXml(node.name, parentAbs, parts, node);
+      }
       if (fills.length <= 1) return shapeXml(node, geo, fills[0], parentAbs, abs, true, true, inside);
       var x = '';
       fills.forEach(function (p, i) {
@@ -756,11 +771,15 @@ async function exportIdml(msg) {
   const name = msg.fileName.replace(/\.figaf$/, '') + '.idml';
   download(new Blob([res.idml], { type: 'application/vnd.adobe.indesign-idml-package' }), name);
   const s = msg.doc.stats;
-  const warns = msg.doc.warnings.concat(res.warnings);
+  // Bỏ cảnh báo của bước đọc Figma không còn đúng với IDML (IDML có blend mode, nét đứt; mask nhóm đã được xử lý).
+  const warns = msg.doc.warnings.filter(function (w) { return !/blend mode .* chưa được chuyển\.$|viền nét đứt được chuyển thành viền liền\.$/.test(w); }).concat(res.warnings);
   let summary = 'Đã xuất ' + name + ' (' + (res.idml.length / 1048576).toFixed(1) + ' MB).\n' +
     'Frame: ' + (s.frame || 0) + ', text: ' + (s.text || 0) + ', hình: ' + ((s.rect || 0) + (s.ellipse || 0) + (s.path || 0)) +
     ', ảnh: ' + msg.images.filter(Boolean).length + '.\nMở bằng File → Open trong Affinity.';
-  if (warns.length) summary += '\n\nCảnh báo (' + warns.length + '):\n- ' + warns.slice(0, 30).join('\n- ');
+  // Gộp cảnh báo trùng nhau để danh sách ngắn, dễ đọc.
+  const seen = {}, uniq = [];
+  warns.forEach(function (w) { if (seen[w]) seen[w]++; else { seen[w] = 1; uniq.push(w); } });
+  if (uniq.length) summary += '\n\nCảnh báo (' + uniq.length + '):\n- ' + uniq.slice(0, 60).map(function (w) { return seen[w] > 1 ? w + ' (×' + seen[w] + ')' : w; }).join('\n- ');
   setStatus(summary);
   parent.postMessage({ pluginMessage: { type: 'done', fileName: name } }, '*');
 }

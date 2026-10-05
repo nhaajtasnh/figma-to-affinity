@@ -188,7 +188,8 @@ function mapEffects(node) {
         color: rgba(e.color),
         offset: e.offset,
         radius: e.radius,
-        spread: e.spread || 0
+        spread: e.spread || 0,
+        behind: e.type === 'DROP_SHADOW' ? !!e.showShadowBehindNode : undefined
       });
     } else if (e.type === 'LAYER_BLUR') {
       out.push({ type: 'LAYER_BLUR', radius: e.radius });
@@ -363,6 +364,7 @@ function serialize(node, asMask) {
     m: node.absoluteTransform
   };
   if ('blendMode' in node && node.blendMode !== 'PASS_THROUGH' && node.blendMode !== 'NORMAL') {
+    out.blendMode = node.blendMode;
     warn(node, 'blend mode ' + node.blendMode + ' chưa được chuyển.');
   }
   if ('effects' in node) {
@@ -503,8 +505,17 @@ function serializeChildren(node) {
   let current = res;
   for (const c of node.children || []) {
     if (c.isMask) {
-      const shape = serialize(c, true);
-      const ok = shape && (shape.kind === 'rect' || shape.kind === 'ellipse' || shape.kind === 'path' || shape.kind === 'frame');
+      let shape = serialize(c, true);
+      let ok = shape && (shape.kind === 'rect' || shape.kind === 'ellipse' || shape.kind === 'path' || shape.kind === 'frame');
+      if (!ok && shape && shape.kind === 'group') {
+        // Mask là một nhóm: hình mask là hợp các hình có màu bên trong nhóm.
+        const gg = maskGeometry(c);
+        if (gg.length) {
+          shape = { kind: 'path', name: c.name, figmaType: c.type, visible: true, opacity: 1, w: c.width, h: c.height, m: c.absoluteTransform,
+            paths: gg, fills: [{ type: 'SOLID', r: 255, g: 255, b: 255, a: 1 }] };
+          ok = true;
+        }
+      }
       if (!ok) {
         warn(c, 'mask dạng ' + c.type + ' chưa hỗ trợ, các layer phía trên không bị cắt.');
         continue;
