@@ -474,7 +474,9 @@ var IDML = (function () {
       var auto = t.autoResize; // WIDTH_AND_HEIGHT | HEIGHT | NONE | TRUNCATE
       var w = node.w, h = node.h;
       // Chừa thêm chút chiều rộng để chữ không bị ngắt dòng do font đo hơi khác.
-      if (auto === 'WIDTH_AND_HEIGHT') w = w + Math.max(2, first.size * 0.2);
+      // Affinity không tự co giãn khung chữ theo IDML, và font đo hơi khác Figma: chừa thêm chỗ để chữ không bị mất.
+      if (auto === 'WIDTH_AND_HEIGHT') w = w + Math.max(4, w * 0.15, first.size);
+      if (vj === 'TopAlign' && auto !== 'TRUNCATE') h = h + (leading(first) || first.size * 1.2) * 0.5;
       var autosize = auto === 'WIDTH_AND_HEIGHT' ? ' AutoSizingType="HeightAndWidth" AutoSizingReferencePoint="' + ({ CENTER: 'TopCenterPoint', RIGHT: 'TopRightPoint' }[t.alignH] || 'TopLeftPoint') + '" UseNoLineBreaksForAutoSizing="true"' :
         auto === 'HEIGHT' ? ' AutoSizingType="HeightOnly" AutoSizingReferencePoint="TopCenterPoint"' : ' AutoSizingType="Off"';
       if (auto === 'WIDTH_AND_HEIGHT' && t.alignH === 'RIGHT') local = mul(local, [[1, 0, node.w - w], [0, 1, 0]]);
