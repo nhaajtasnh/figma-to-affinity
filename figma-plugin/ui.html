@@ -174,6 +174,27 @@ var IDML = (function () {
 
     // --- story ---
     var stories = [];
+    // Font đã dùng: ghi vào Fonts.xml kèm tên PostScript để Affinity chọn đúng kiểu chữ (Regular, Italic…).
+    var usedFonts = {};
+    function useFont(family, style) {
+      family = family || 'Arial'; style = style || 'Regular';
+      (usedFonts[family] = usedFonts[family] || {})[style] = true;
+      return '';
+    }
+    function fontsXml() {
+      var x = '';
+      Object.keys(usedFonts).forEach(function (fam) {
+        x += '<FontFamily Self="' + uid('fam') + '" Name="' + esc(fam) + '">';
+        Object.keys(usedFonts[fam]).forEach(function (st) {
+          var ps = fam.replace(/\s+/g, '') + '-' + st.replace(/\s+/g, '');
+          x += '<Font Self="' + uid('fnt') + '" FontFamily="' + esc(fam) + '" Name="' + esc(fam + ' ' + st) + '" PostScriptName="' + esc(ps) +
+            '" Status="Installed" FontStyleName="' + esc(st) + '" FontType="OpenTypeTT" WritingScript="0" FullName="' + esc(fam + ' ' + st) +
+            '" FullNameNative="' + esc(fam + ' ' + st) + '" FontStyleNameNative="' + esc(st) + '" PlatformName="$ID/" Version=""/>';
+        });
+        x += '</FontFamily>';
+      });
+      return x;
+    }
 
     // --- thuộc tính fill/stroke cho một page item ---
     // local: ma trận toạ độ trong item -> toạ độ page (để tính điểm đầu gradient trong toạ độ item)
@@ -329,7 +350,7 @@ var IDML = (function () {
 
     // --- ảnh ---
     var imgCache = [];
-    function imageXml(node, paint, w, h) {
+    function imageXml(node, paint, w, h, fix) {
       var bytes = imageBytes[paint.image];
       var info = imageInfo(bytes);
       if (!info) { warn(node, 'không đọc được ảnh, đã bỏ qua.'); return ''; }
@@ -340,6 +361,7 @@ var IDML = (function () {
         var s = paint.scaleMode === 'FIT' ? Math.min(w / iw, h / ih) : Math.max(w / iw, h / ih);
         M = [[s, 0, (w - iw * s) / 2], [0, s, (h - ih * s) / 2]];
       }
+      if (fix) M = mul(fix, M); // khung dạng path: đổi từ toạ độ khung (0..w, 0..h) sang toạ độ của item
       if (paint.rotation) warn(node, 'ảnh bị xoay trong khung chưa được chuyển góc xoay.');
       var file = 'image' + (paint.image + 1) + '.' + info.ext;
       if (!imgCache[paint.image]) imgCache[paint.image] = { name: file, bytes: bytes };
@@ -371,7 +393,7 @@ var IDML = (function () {
         f.attrs + st.attrs + (geo.kind === 'rect' ? cornerAttrs(geo.radius) : '') + ' ItemTransform="' + mat(local) + '">';
       x += pathPointsXml(sub);
       x += transparencyXml(node, f.fillAlpha, st.alpha, withEffects);
-      if (paint && paint.type === 'IMAGE') x += imageXml(node, paint, geo.w, geo.h);
+      if (paint && paint.type === 'IMAGE') x += imageXml(node, paint, geo.w, geo.h, geo.kind === 'path' && geo.m ? mul(inv(abs), geo.m) : null);
       if (inside) x += inside;
       return x + '</' + tag + '>';
     }
@@ -387,11 +409,11 @@ var IDML = (function () {
 
     function geoOf(node) {
       if (node.kind === 'rect' || node.kind === 'frame') {
-        if (node.bgPaths && node.bgPaths.length) return { kind: 'path', paths: node.bgPaths, w: node.w, h: node.h };
+        if (node.bgPaths && node.bgPaths.length) return { kind: 'path', paths: node.bgPaths, w: node.w, h: node.h, m: node.m };
         return { kind: 'rect', w: node.w, h: node.h, radius: node.radius };
       }
       if (node.kind === 'ellipse') return { kind: 'oval', w: node.w, h: node.h };
-      return { kind: 'path', paths: node.paths, w: node.w, h: node.h };
+      return { kind: 'path', paths: node.paths, w: node.w, h: node.h, m: node.m };
     }
 
     // Một hình có thể có nhiều fill: lớp dưới cùng mang viền + hiệu ứng nếu chỉ có một lớp,
@@ -455,7 +477,7 @@ var IDML = (function () {
           (track ? ' Tracking="' + n(track) + '"' : '') +
           (s.smallCaps ? ' Capitalization="SmallCaps"' : '') + '>' +
           '<Properties>' + (L !== null ? '<Leading type="unit">' + n(L) + '</Leading>' : '<Leading type="enumeration">Auto</Leading>') +
-          '<AppliedFont type="string">' + esc(s.family) + '</AppliedFont></Properties>' +
+          '<AppliedFont type="string">' + esc(s.family) + '</AppliedFont></Properties>' + useFont(s.family, s.style) +
           (text ? '<Content>' + esc(text) + '</Content>' : '') + (br ? '<Br/>' : '') + '</CharacterStyleRange>';
       }
       var body = paras.map(function (runs, pi) {
@@ -631,7 +653,7 @@ var IDML = (function () {
       '<TransparencyPreference BlendingSpace="RGB"/>' +
       '</idPkg:Preferences>';
 
-    var fonts = HDR + '<idPkg:Fonts ' + PKG + '></idPkg:Fonts>';
+    var fonts = HDR + '<idPkg:Fonts ' + PKG + '>' + fontsXml() + '</idPkg:Fonts>';
 
     var designmap = HDR + '<?aid style="50" type="document" readerVersion="6.0" featureSet="257" product="8.0(370)" ?>\n' +
       '<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="8.0" Self="d" StoryList="' + stories.map(function (s) { return s.id; }).join(' ') + '" Name="' + esc((doc.source && doc.source.file) || 'Figma') + '" ZeroPoint="0 0" ActiveLayer="layer1" CMYKProfile="$ID/" RGBProfile="sRGB IEC61966-2.1" SolidColorIntent="UseColorSettings" AfterBlendingIntent="UseColorSettings" DefaultImageIntent="UseColorSettings" RGBPolicy="PreserveEmbeddedProfiles" CMYKPolicy="CombinationOfPreserveAndSafeCmyk" AccurateLABSpots="false">' +
