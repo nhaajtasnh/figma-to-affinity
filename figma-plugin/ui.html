@@ -8,6 +8,7 @@
   p { margin: 0 0 10px; color: #555; }
   button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 0; background: #0d99ff; color: #fff; cursor: pointer; }
   button[disabled] { opacity: .5; cursor: default; }
+  button.alt { background: #fff; color: #0d99ff; border: 1px solid #0d99ff; margin-left: 6px; }
   #status { margin-top: 12px; white-space: pre-wrap; max-height: 130px; overflow: auto; font-size: 12px; }
   .err { color: #c0392b; }
 </style>
@@ -15,23 +16,703 @@
 <body>
   <h1>Figma → Affinity <span style="font-weight:400;color:#888">0.2.0-beta</span></h1>
   <p>Chọn một hoặc nhiều frame rồi bấm Xuất. File <b>.figaf</b> sẽ được tải về; chép file đó ra <b>Desktop</b> rồi mở bằng script trong Affinity.</p>
-  <button id="go">Xuất frame đang chọn</button>
+  <button id="go">Xuất frame đang chọn</button><button id="goIdml" class="alt" title="Thử nghiệm: file .idml mở thẳng bằng File → Open trong Affinity, không cần script">Xuất IDML (thử)</button>
   <div id="status"></div>
+<script>
+// BEGIN idml-writer
+// Dựng file IDML (định dạng trao đổi của InDesign) từ dữ liệu plugin xuất ra.
+// Affinity mở trực tiếp file .idml bằng File → Open, không cần script.
+// Dùng chung trong ui.html (trình duyệt) và tools/ (Node) nên không phụ thuộc thư viện nào.
+// 1 px Figma = 1 pt trong IDML, nên số đo giữ nguyên.
+
+var IDML = (function () {
+  'use strict';
+
+  // ---------- tiện ích ----------
+
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+      // ký tự điều khiển không hợp lệ trong XML
+      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '');
+  }
+  function n(v) {
+    if (!isFinite(v)) return '0';
+    var r = Math.round(v * 1000) / 1000;
+    return String(r === 0 ? 0 : r);
+  }
+  function mat(m) { // Figma [[a,c,tx],[b,d,ty]] -> IDML "a b c d tx ty"
+    return n(m[0][0]) + ' ' + n(m[1][0]) + ' ' + n(m[0][1]) + ' ' + n(m[1][1]) + ' ' + n(m[0][2]) + ' ' + n(m[1][2]);
+  }
+  function mul(A, B) {
+    return [
+      [A[0][0] * B[0][0] + A[0][1] * B[1][0], A[0][0] * B[0][1] + A[0][1] * B[1][1], A[0][0] * B[0][2] + A[0][1] * B[1][2] + A[0][2]],
+      [A[1][0] * B[0][0] + A[1][1] * B[1][0], A[1][0] * B[0][1] + A[1][1] * B[1][1], A[1][0] * B[0][2] + A[1][1] * B[1][2] + A[1][2]]
+    ];
+  }
+  function inv(t) {
+    var a = t[0][0], b = t[0][1], c = t[0][2], d = t[1][0], e = t[1][1], f = t[1][2];
+    var det = a * e - b * d;
+    if (Math.abs(det) < 1e-12) return [[1, 0, 0], [0, 1, 0]];
+    return [[e / det, -b / det, (b * f - c * e) / det], [-d / det, a / det, (c * d - a * f) / det]];
+  }
+  function ap(m, x, y) { return [m[0][0] * x + m[0][1] * y + m[0][2], m[1][0] * x + m[1][1] * y + m[1][2]]; }
+  var I = [[1, 0, 0], [0, 1, 0]];
+
+  // ---------- zip (không nén, đủ cho IDML) ----------
+
+  var CRC = (function () {
+    var t = new Uint32Array(256);
+    for (var i = 0; i < 256; i++) {
+      var c = i;
+      for (var k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+      t[i] = c >>> 0;
+    }
+    return t;
+  })();
+  function crc32(b) {
+    var c = 0xFFFFFFFF;
+    for (var i = 0; i < b.length; i++) c = CRC[(c ^ b[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+  function utf8(s) {
+    if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(s);
+    return new Uint8Array(Buffer.from(s, 'utf8'));
+  }
+  function zip(files) { // [{name, data: Uint8Array|string}]
+    var parts = [], central = [], off = 0;
+    files.forEach(function (f) {
+      var name = utf8(f.name);
+      var data = typeof f.data === 'string' ? utf8(f.data) : f.data;
+      var crc = crc32(data);
+      var h = new DataView(new ArrayBuffer(30));
+      h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true);
+      h.setUint16(8, 0, true); h.setUint16(10, 0, true); h.setUint16(12, 0x21, true);
+      h.setUint32(14, crc, true); h.setUint32(18, data.length, true); h.setUint32(22, data.length, true);
+      h.setUint16(26, name.length, true); h.setUint16(28, 0, true);
+      parts.push(new Uint8Array(h.buffer), name, data);
+      var c = new DataView(new ArrayBuffer(46));
+      c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x0800, true);
+      c.setUint16(10, 0, true); c.setUint16(12, 0, true); c.setUint16(14, 0x21, true);
+      c.setUint32(16, crc, true); c.setUint32(20, data.length, true); c.setUint32(24, data.length, true);
+      c.setUint16(28, name.length, true); c.setUint32(42, off, true);
+      central.push(new Uint8Array(c.buffer), name);
+      off += 30 + name.length + data.length;
+    });
+    var csize = central.reduce(function (s, p) { return s + p.length; }, 0);
+    var e = new DataView(new ArrayBuffer(22));
+    e.setUint32(0, 0x06054b50, true); e.setUint16(8, files.length, true); e.setUint16(10, files.length, true);
+    e.setUint32(12, csize, true); e.setUint32(16, off, true);
+    var all = parts.concat(central, [new Uint8Array(e.buffer)]);
+    var total = all.reduce(function (s, p) { return s + p.length; }, 0);
+    var out = new Uint8Array(total), p = 0;
+    all.forEach(function (a) { out.set(a, p); p += a.length; });
+    return out;
+  }
+
+  function b64(bytes) {
+    if (typeof btoa === 'undefined') return Buffer.from(bytes).toString('base64');
+    var s = '', CH = 0x8000;
+    for (var i = 0; i < bytes.length; i += CH) s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+    return btoa(s);
+  }
+
+  // Kích thước ảnh PNG/JPEG từ header.
+  function imageInfo(b) {
+    if (!b || b.length < 24) return null;
+    if (b[0] === 0x89 && b[1] === 0x50) {
+      return { w: (b[16] << 24 | b[17] << 16 | b[18] << 8 | b[19]) >>> 0, h: (b[20] << 24 | b[21] << 16 | b[22] << 8 | b[23]) >>> 0, ext: 'png', type: '$ID/Portable Network Graphics (PNG)' };
+    }
+    if (b[0] === 0xFF && b[1] === 0xD8) {
+      var i = 2;
+      while (i + 9 < b.length) {
+        if (b[i] !== 0xFF) { i++; continue; }
+        var mk = b[i + 1], len = b[i + 2] << 8 | b[i + 3];
+        if (mk >= 0xC0 && mk <= 0xCF && mk !== 0xC4 && mk !== 0xC8 && mk !== 0xCC) {
+          return { h: b[i + 5] << 8 | b[i + 6], w: b[i + 7] << 8 | b[i + 8], ext: 'jpg', type: '$ID/JPEG' };
+        }
+        i += 2 + len;
+      }
+    }
+    if (b[0] === 0x47 && b[1] === 0x49) return { w: b[6] | b[7] << 8, h: b[8] | b[9] << 8, ext: 'gif', type: '$ID/GIF' };
+    return null;
+  }
+
+  // ---------- trình dựng ----------
+
+  function build(doc, imageBytes, opts) {
+    opts = opts || {};
+    var warnings = [];
+    var idc = 0;
+    function uid(p) { return (p || 'u') + (++idc).toString(16); }
+    function warn(node, msg) { warnings.push((node && node.name ? '"' + node.name + '": ' : '') + msg); }
+
+    // --- màu ---
+    var colors = {}, colorXml = [];
+    function color(c) {
+      var r = Math.max(0, Math.min(255, Math.round(c.r))), g = Math.max(0, Math.min(255, Math.round(c.g))), b = Math.max(0, Math.min(255, Math.round(c.b)));
+      var key = r + '_' + g + '_' + b;
+      if (!colors[key]) {
+        colors[key] = 'Color/R=' + r + ' G=' + g + ' B=' + b;
+        colorXml.push('<Color Self="' + esc(colors[key]) + '" Model="Process" Space="RGB" ColorValue="' + r + ' ' + g + ' ' + b + '" ColorOverride="Normal" AlternateSpace="NoAlternateColor" AlternateColorValue="" Name="R=' + r + ' G=' + g + ' B=' + b + '" ColorEditable="true" ColorRemovable="true" Visible="true" SwatchCreatorID="7937"/>');
+      }
+      return colors[key];
+    }
+    var gradXml = [];
+    function gradient(p, node) {
+      var id = 'Gradient/' + uid('g');
+      var type = p.type === 'LINEAR' ? 'Linear' : 'Radial';
+      if (p.type === 'ANGULAR') warn(node, 'gradient góc (angular) trong IDML được chuyển thành gradient tròn.');
+      var stops = p.stops.slice().sort(function (a, b) { return a.pos - b.pos; });
+      if (stops.some(function (s) { return s.a < 0.999; })) warn(node, 'IDML không có độ trong suốt riêng từng điểm màu của gradient, đã bỏ phần trong suốt.');
+      var xml = '<Gradient Self="' + id + '" Type="' + type + '" Name="' + id.slice(9) + '" ColorEditable="true" ColorRemovable="true" Visible="true" SwatchCreatorID="7937">';
+      stops.forEach(function (s) {
+        xml += '<GradientStop Self="' + id + 's' + uid('') + '" StopColor="' + esc(color(s)) + '" Location="' + n(s.pos * 100) + '" Midpoint="50"/>';
+      });
+      gradXml.push(xml + '</Gradient>');
+      return id;
+    }
+
+    // --- story ---
+    var stories = [];
+
+    // --- thuộc tính fill/stroke cho một page item ---
+    // local: ma trận toạ độ trong item -> toạ độ page (để tính điểm đầu gradient trong toạ độ item)
+    function fillAttrs(node, paint, local) {
+      if (!paint) return { attrs: ' FillColor="Swatch/None"', fillAlpha: 1 };
+      if (paint.type === 'SOLID') return { attrs: ' FillColor="' + esc(color(paint)) + '"', fillAlpha: paint.a };
+      if (paint.stops) {
+        var g = gradient(paint, node);
+        var li = inv(local);
+        var s, e;
+        if (paint.gx) {
+          if (paint.type === 'LINEAR') { s = ap(paint.gx, 0, 0.5); e = ap(paint.gx, 1, 0.5); }
+          else { s = ap(paint.gx, 0.5, 0.5); e = ap(paint.gx, 1, 0.5); }
+        } else { s = paint.start; e = paint.end; }
+        var ls = ap(li, s[0], s[1]), le = ap(li, e[0], e[1]);
+        var dx = le[0] - ls[0], dy = le[1] - ls[1];
+        var len = Math.sqrt(dx * dx + dy * dy);
+        var ang = -Math.atan2(dy, dx) * 180 / Math.PI;
+        return {
+          attrs: ' FillColor="' + g + '" GradientFillStart="' + n(ls[0]) + ' ' + n(ls[1]) + '" GradientFillLength="' + n(len) + '" GradientFillAngle="' + n(ang) + '"',
+          fillAlpha: paint.opacity === undefined ? 1 : paint.opacity
+        };
+      }
+      return { attrs: ' FillColor="Swatch/None"', fillAlpha: 1 };
+    }
+
+    function strokeAttrs(node) {
+      if (!node.strokes || !node.strokes.length || !node.strokeWeight) return { attrs: ' StrokeColor="Swatch/None" StrokeWeight="0"', alpha: 1 };
+      var s = node.strokes[0];
+      if (node.strokes.length > 1) warn(node, 'nhiều lớp viền, chỉ giữ lớp trên cùng.');
+      var col = s.type === 'SOLID' ? color(s) : (s.stops ? color(s.stops[0]) : 'Color/Black');
+      var alpha = s.type === 'SOLID' ? s.a : 1;
+      var align = { INSIDE: 'InsideAlignment', OUTSIDE: 'OutsideAlignment' }[node.strokeAlign] || 'CenterAlignment';
+      var cap = { ROUND: 'RoundEndCap', SQUARE: 'ProjectingEndCap' }[node.strokeCap] || 'ButtEndCap';
+      var join = { ROUND: 'RoundEndJoin', BEVEL: 'BevelEndJoin' }[node.strokeJoin] || 'MiterEndJoin';
+      var a = ' StrokeColor="' + esc(col) + '" StrokeWeight="' + n(node.strokeWeight) + '" StrokeAlignment="' + align + '" EndCap="' + cap + '" EndJoin="' + join + '"';
+      if (node.dashPattern && node.dashPattern.length) {
+        a += ' StrokeType="StrokeStyle/$ID/Dashed"';
+      }
+      return { attrs: a, alpha: alpha };
+    }
+
+    // Hiệu ứng + độ trong suốt: các phần tử con của page item.
+    function transparencyXml(node, fillAlpha, strokeAlpha, withEffects) {
+      var x = '';
+      var op = node.opacity === undefined ? 1 : node.opacity;
+      var drop = null, inner = null;
+      if (withEffects) {
+        (node.effects || []).forEach(function (e) {
+          if (e.type === 'DROP_SHADOW') { if (!drop) drop = e; else warn(node, 'IDML chỉ có một bóng đổ mỗi layer, bỏ các bóng còn lại.'); }
+          else if (e.type === 'INNER_SHADOW') { if (!inner) inner = e; else warn(node, 'chỉ giữ một inner shadow.'); }
+          else if (e.type === 'LAYER_BLUR') warn(node, 'layer blur không có trong IDML, đã bỏ qua.');
+        });
+      }
+      function shadowXml(tag, e) {
+        var dist = Math.sqrt(e.offset.x * e.offset.x + e.offset.y * e.offset.y);
+        var ang = dist ? -Math.atan2(e.offset.y, e.offset.x) * 180 / Math.PI : 90;
+        var common = ' BlendMode="Multiply" Opacity="' + n(e.color.a * 100) + '" Size="' + n(e.radius) + '" Distance="' + n(dist) + '" Angle="' + n(ang) +
+          '" EffectColor="' + esc(color(e.color)) + '" UseGlobalLight="false"';
+        if (tag === 'DropShadowSetting') {
+          return '<DropShadowSetting Mode="Drop"' + common + ' XOffset="' + n(e.offset.x) + '" YOffset="' + n(e.offset.y) + '" Spread="' + n(e.radius ? Math.min(100, (e.spread || 0) / e.radius * 100) : 0) + '"/>';
+        }
+        return '<InnerShadowSetting Applied="true"' + common + ' ChokeAmount="' + n(e.radius ? Math.min(100, (e.spread || 0) / e.radius * 100) : 0) + '"/>';
+      }
+      if (op < 0.999 || drop || inner) {
+        x += '<TransparencySetting>';
+        if (op < 0.999) x += '<BlendingSetting Opacity="' + n(op * 100) + '"/>';
+        if (drop) x += shadowXml('DropShadowSetting', drop);
+        if (inner) x += shadowXml('InnerShadowSetting', inner);
+        x += '</TransparencySetting>';
+      }
+      if (fillAlpha < 0.999) x += '<FillTransparencySetting><BlendingSetting Opacity="' + n(fillAlpha * 100) + '"/></FillTransparencySetting>';
+      if (strokeAlpha < 0.999) x += '<StrokeTransparencySetting><BlendingSetting Opacity="' + n(strokeAlpha * 100) + '"/></StrokeTransparencySetting>';
+      return x;
+    }
+
+    // --- hình học ---
+    function pathPointsXml(subpaths) { // subpaths: [{open, pts:[{a,l,r}]}]
+      var x = '<Properties><PathGeometry>';
+      subpaths.forEach(function (sp) {
+        x += '<GeometryPathType PathOpen="' + (sp.open ? 'true' : 'false') + '"><PathPointArray>';
+        sp.pts.forEach(function (p) {
+          x += '<PathPointType Anchor="' + n(p.a[0]) + ' ' + n(p.a[1]) + '" LeftDirection="' + n(p.l[0]) + ' ' + n(p.l[1]) + '" RightDirection="' + n(p.r[0]) + ' ' + n(p.r[1]) + '"/>';
+        });
+        x += '</PathPointArray></GeometryPathType>';
+      });
+      return x + '</PathGeometry></Properties>';
+    }
+    function rectPts(w, h) {
+      var c = [[0, 0], [0, h], [w, h], [w, 0]];
+      return [{ open: false, pts: c.map(function (p) { return { a: p, l: p, r: p }; }) }];
+    }
+    function ovalPts(w, h) {
+      var k = 0.5522847498, cx = w / 2, cy = h / 2, rx = w / 2, ry = h / 2;
+      return [{
+        open: false, pts: [
+          { a: [0, cy], l: [0, cy + ry * k], r: [0, cy - ry * k] },
+          { a: [cx, 0], l: [cx - rx * k, 0], r: [cx + rx * k, 0] },
+          { a: [w, cy], l: [w, cy - ry * k], r: [w, cy + ry * k] },
+          { a: [cx, h], l: [cx + rx * k, h], r: [cx - rx * k, h] }
+        ]
+      }];
+    }
+    // cmds (toạ độ page) -> subpaths trong toạ độ item (qua ma trận li)
+    function cmdsToSub(paths, li) {
+      var subs = [];
+      (paths || []).forEach(function (p) {
+        var cur = null;
+        function flush(closed) {
+          if (!cur || !cur.pts.length) return;
+          var pts = cur.pts;
+          if (closed && pts.length > 1) {
+            var f = pts[0], l = pts[pts.length - 1];
+            if (Math.abs(f.a[0] - l.a[0]) < 1e-3 && Math.abs(f.a[1] - l.a[1]) < 1e-3) {
+              f.l = l.l; pts.pop();
+            }
+          }
+          cur.open = !closed;
+          if (pts.length) subs.push(cur);
+          cur = null;
+        }
+        (p.cmds || []).forEach(function (c) {
+          if (c[0] === 'M') {
+            flush(false);
+            var a = ap(li, c[1], c[2]);
+            cur = { pts: [{ a: a, l: a, r: a }] };
+          } else if (c[0] === 'L' && cur) {
+            var b = ap(li, c[1], c[2]);
+            cur.pts.push({ a: b, l: b, r: b });
+          } else if (c[0] === 'C' && cur) {
+            var c1 = ap(li, c[1], c[2]), c2 = ap(li, c[3], c[4]), e = ap(li, c[5], c[6]);
+            cur.pts[cur.pts.length - 1].r = c1;
+            cur.pts.push({ a: e, l: c2, r: e });
+          } else if (c[0] === 'Z') {
+            var start = cur && cur.pts[0];
+            flush(true);
+            if (start) cur = null;
+          }
+        });
+        flush(!!(p.open === false));
+        if (p.open === true && subs.length) subs[subs.length - 1].open = true;
+      });
+      return subs;
+    }
+    function cornerAttrs(r) {
+      if (!r) return '';
+      var x = '';
+      [['TopLeft', r.tl], ['TopRight', r.tr], ['BottomLeft', r.bl], ['BottomRight', r.br]].forEach(function (c) {
+        if (c[1] > 0) x += ' ' + c[0] + 'CornerOption="RoundedCorner" ' + c[0] + 'CornerRadius="' + n(c[1]) + '"';
+      });
+      return x;
+    }
+
+    // --- ảnh ---
+    var imgCache = [];
+    function imageXml(node, paint, w, h) {
+      var bytes = imageBytes[paint.image];
+      var info = imageInfo(bytes);
+      if (!info) { warn(node, 'không đọc được ảnh, đã bỏ qua.'); return ''; }
+      var iw = info.w, ih = info.h, M;
+      if (paint.scaleMode === 'CROP' && paint.imageTransform) {
+        M = mul([[w, 0, 0], [0, h, 0]], mul(inv(paint.imageTransform), [[1 / iw, 0, 0], [0, 1 / ih, 0]]));
+      } else {
+        var s = paint.scaleMode === 'FIT' ? Math.min(w / iw, h / ih) : Math.max(w / iw, h / ih);
+        M = [[s, 0, (w - iw * s) / 2], [0, s, (h - ih * s) / 2]];
+      }
+      if (paint.rotation) warn(node, 'ảnh bị xoay trong khung chưa được chuyển góc xoay.');
+      var file = 'image' + (paint.image + 1) + '.' + info.ext;
+      if (!imgCache[paint.image]) imgCache[paint.image] = { name: file, bytes: bytes };
+      var self = uid('img');
+      var uri = (opts.linkBase || 'file:Links/') + file;
+      var x = '<Image Self="' + self + '" Space="$ID/#Links_RGB" ActualPpi="72 72" EffectivePpi="' + n(72 / M[0][0]) + ' ' + n(72 / M[1][1]) + '" ImageTypeName="' + info.type + '" AppliedObjectStyle="ObjectStyle/$ID/[None]" ItemTransform="' + mat(M) + '"' + (paint.opacity < 0.999 ? '' : '') + '>';
+      x += '<Properties><Profile type="string">$ID/None</Profile><GraphicBounds Left="0" Top="0" Right="' + iw + '" Bottom="' + ih + '"/>';
+      if (opts.embedImages !== false) x += '<Contents><![CDATA[' + b64(bytes) + ']]></Contents>';
+      x += '</Properties>';
+      if (paint.opacity < 0.999) x += '<TransparencySetting><BlendingSetting Opacity="' + n(paint.opacity * 100) + '"/></TransparencySetting>';
+      x += '<Link Self="' + uid('lnk') + '" AssetURL="$ID/" AssetID="$ID/" LinkResourceURI="' + esc(uri) + '" LinkResourceFormat="' + info.type + '" StoredState="' + (opts.embedImages !== false ? 'Embedded' : 'Normal') + '" LinkClassID="35906" LinkClientID="257" LinkResourceModified="false" LinkObjectModified="false" ShowInUI="true" CanEmbed="true" CanUnembed="true" CanPackage="true" ImportPolicy="NoAutoImport" ExportPolicy="NoAutoExport" LinkImportStamp="" LinkImportModificationTime="" LinkImportTime="" LinkResourceSize="0~0"/>';
+      return x + '</Image>';
+    }
+
+    // --- page item cho một hình (rect/ellipse/path/frame nền) ---
+    // abs: ma trận item -> page; parentAbs: ma trận của phần tử cha -> page
+    // geo: {kind:'rect'|'oval'|'path', w,h, radius, paths}
+    // inside: chuỗi XML phần tử con (nội dung bị cắt), nếu có
+    function shapeXml(node, geo, paint, parentAbs, abs, withStroke, withEffects, inside, name) {
+      var tag = geo.kind === 'oval' ? 'Oval' : (geo.kind === 'path' ? 'Polygon' : 'Rectangle');
+      var self = uid('it');
+      var f = paint && paint.type === 'IMAGE' ? { attrs: ' FillColor="Swatch/None"', fillAlpha: 1 } : fillAttrs(node, paint, abs);
+      var st = withStroke ? strokeAttrs(node) : { attrs: ' StrokeColor="Swatch/None" StrokeWeight="0"', alpha: 1 };
+      var sub = geo.kind === 'oval' ? ovalPts(geo.w, geo.h) : geo.kind === 'path' ? cmdsToSub(geo.paths, inv(abs)) : rectPts(geo.w, geo.h);
+      if (!sub.length) return '';
+      var local = mul(inv(parentAbs), abs);
+      var x = '<' + tag + ' Self="' + self + '" Name="' + esc(name || node.name || '') + '" ItemLayer="layer1" Visible="' + (node.visible === false ? 'false' : 'true') + '"' +
+        ' ContentType="' + (paint && paint.type === 'IMAGE' ? 'GraphicType' : 'Unassigned') + '" AppliedObjectStyle="ObjectStyle/$ID/[None]"' +
+        f.attrs + st.attrs + (geo.kind === 'rect' ? cornerAttrs(geo.radius) : '') + ' ItemTransform="' + mat(local) + '">';
+      x += pathPointsXml(sub);
+      x += transparencyXml(node, f.fillAlpha, st.alpha, withEffects);
+      if (paint && paint.type === 'IMAGE') x += imageXml(node, paint, geo.w, geo.h);
+      if (inside) x += inside;
+      return x + '</' + tag + '>';
+    }
+
+    function groupXml(name, parentAbs, inner, node) {
+      if (!inner) return '';
+      var x = '<Group Self="' + uid('grp') + '" Name="' + esc(name || '') + '" ItemLayer="layer1" Visible="' + (node && node.visible === false ? 'false' : 'true') + '" AppliedObjectStyle="ObjectStyle/$ID/[None]" ItemTransform="' + mat(mul(inv(parentAbs), I)) + '">';
+      if (node) x += transparencyXml(node, 1, 1, true);
+      return x + inner + '</Group>';
+    }
+
+    function relM(node) { return node.m; }
+
+    function geoOf(node) {
+      if (node.kind === 'rect' || node.kind === 'frame') {
+        if (node.bgPaths && node.bgPaths.length) return { kind: 'path', paths: node.bgPaths, w: node.w, h: node.h };
+        return { kind: 'rect', w: node.w, h: node.h, radius: node.radius };
+      }
+      if (node.kind === 'ellipse') return { kind: 'oval', w: node.w, h: node.h };
+      return { kind: 'path', paths: node.paths, w: node.w, h: node.h };
+    }
+
+    // Một hình có thể có nhiều fill: lớp dưới cùng mang viền + hiệu ứng nếu chỉ có một lớp,
+    // còn nhiều lớp thì gói vào nhóm và đặt hiệu ứng lên nhóm.
+    function leafXml(node, parentAbs, inside) {
+      var geo = geoOf(node);
+      var abs = geo.kind === 'path' ? I : relM(node);
+      var fills = node.fills || [];
+      if (fills.length <= 1) return shapeXml(node, geo, fills[0], parentAbs, abs, true, true, inside);
+      var x = '';
+      fills.forEach(function (p, i) {
+        var last = i === fills.length - 1;
+        var plain = { name: node.name, visible: true, opacity: 1, strokes: node.strokes, strokeWeight: node.strokeWeight, strokeAlign: node.strokeAlign, strokeCap: node.strokeCap, strokeJoin: node.strokeJoin };
+        x += shapeXml(plain, geo, p, I, abs, last, false, last ? inside : '', node.name + (i ? ' (lớp ' + (i + 1) + ')' : ''));
+      });
+      return groupXml(node.name, parentAbs, x, node);
+    }
+
+    // --- text ---
+    function textXml(node, parentAbs) {
+      var t = node.text;
+      var storyId = uid('st');
+      var abs = relM(node);
+      var local = mul(inv(parentAbs), abs);
+      var just = { CENTER: 'CenterAlign', RIGHT: 'RightAlign', JUSTIFIED: 'LeftJustified' }[t.alignH] || 'LeftAlign';
+      var vj = { CENTER: 'CenterAlign', BOTTOM: 'BottomAlign' }[t.alignV] || 'TopAlign';
+      var segs = t.segments || [];
+      var first = segs[0] || { size: 12, lineHeight: { unit: 'AUTO' } };
+      function leading(s) {
+        var lh = s.lineHeight || {};
+        if (lh.unit === 'PIXELS') return lh.value;
+        if (lh.unit === 'PERCENT') return s.size * lh.value / 100;
+        return null;
+      }
+      // Figma đặt dòng đầu ở giữa chiều cao dòng; IDML đặt theo khoảng cách baseline cố định.
+      var L0 = leading(first) || first.size * 1.2;
+      var baseline = (L0 - first.size * 1.2) / 2 + first.size * 0.95;
+
+      // Chia thành các đoạn theo ký tự xuống dòng, mỗi đoạn gồm các đoạn chữ cùng style.
+      var paras = [[]];
+      segs.forEach(function (s) {
+        var lines = String(s.chars).replace(/\r\n?/g, '\n').replace(/\u2028/g, '\n').split('\n');
+        lines.forEach(function (ln, i) {
+          if (i > 0) paras.push([]);
+          paras[paras.length - 1].push({ seg: s, text: ln });
+        });
+      });
+      var pAttrs = ' AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]" Justification="' + just + '"' +
+        (t.paragraphSpacing ? ' SpaceAfter="' + n(t.paragraphSpacing) + '"' : '') +
+        (t.paragraphIndent ? ' FirstLineIndent="' + n(t.paragraphIndent) + '"' : '');
+      var alphaWarned = false;
+      function runXml(s, text, br) {
+        var L = leading(s);
+        var ls = s.letterSpacing || {};
+        var track = ls.unit === 'PERCENT' ? ls.value * 10 : (ls.unit === 'PIXELS' && s.size ? ls.value / s.size * 1000 : 0);
+        if (s.color && s.color.a < 0.999 && !alphaWarned) { alphaWarned = true; warn(node, 'chữ trong suốt một phần được chuyển thành chữ đặc.'); }
+        return '<CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]" FontStyle="' + esc(s.style || 'Regular') + '" PointSize="' + n(s.size) + '"' +
+          ' FillColor="' + esc(color(s.color || { r: 0, g: 0, b: 0 })) + '"' +
+          (track ? ' Tracking="' + n(track) + '"' : '') +
+          (s.smallCaps ? ' Capitalization="SmallCaps"' : '') + '>' +
+          '<Properties>' + (L !== null ? '<Leading type="unit">' + n(L) + '</Leading>' : '<Leading type="enumeration">Auto</Leading>') +
+          '<AppliedFont type="string">' + esc(s.family) + '</AppliedFont></Properties>' +
+          (text ? '<Content>' + esc(text) + '</Content>' : '') + (br ? '<Br/>' : '') + '</CharacterStyleRange>';
+      }
+      var body = paras.map(function (runs, pi) {
+        var last = pi === paras.length - 1;
+        var nonEmpty = runs.filter(function (r) { return r.text.length; });
+        if (!nonEmpty.length) nonEmpty = [runs[0]];
+        return '<ParagraphStyleRange' + pAttrs + '>' + nonEmpty.map(function (r, ri) {
+          return runXml(r.seg, r.text, !last && ri === nonEmpty.length - 1);
+        }).join('') + '</ParagraphStyleRange>';
+      }).join('');
+      stories.push({
+        id: storyId,
+        xml: '<Story Self="' + storyId + '" AppliedTOCStyle="n" TrackChanges="false" StoryTitle="' + esc(node.name || '') + '" AppliedNamedGrid="n">' +
+          '<StoryPreference OpticalMarginAlignment="false" OpticalMarginSize="12" FrameType="TextFrameType" StoryOrientation="Horizontal" StoryDirection="LeftToRightDirection"/>' +
+          body + '</Story>'
+      });
+
+      var auto = t.autoResize; // WIDTH_AND_HEIGHT | HEIGHT | NONE | TRUNCATE
+      var w = node.w, h = node.h;
+      // Chừa thêm chút chiều rộng để chữ không bị ngắt dòng do font đo hơi khác.
+      if (auto === 'WIDTH_AND_HEIGHT') w = w + Math.max(2, first.size * 0.2);
+      var autosize = auto === 'WIDTH_AND_HEIGHT' ? ' AutoSizingType="HeightAndWidth" AutoSizingReferencePoint="' + ({ CENTER: 'TopCenterPoint', RIGHT: 'TopRightPoint' }[t.alignH] || 'TopLeftPoint') + '" UseNoLineBreaksForAutoSizing="true"' :
+        auto === 'HEIGHT' ? ' AutoSizingType="HeightOnly" AutoSizingReferencePoint="TopCenterPoint"' : ' AutoSizingType="Off"';
+      if (auto === 'WIDTH_AND_HEIGHT' && t.alignH === 'RIGHT') local = mul(local, [[1, 0, node.w - w], [0, 1, 0]]);
+      if (auto === 'WIDTH_AND_HEIGHT' && t.alignH === 'CENTER') local = mul(local, [[1, 0, (node.w - w) / 2], [0, 1, 0]]);
+      var x = '<TextFrame Self="' + uid('tf') + '" Name="' + esc(node.name || '') + '" ParentStory="' + storyId + '" PreviousTextFrame="n" NextTextFrame="n" ContentType="TextType" ItemLayer="layer1" Visible="' + (node.visible === false ? 'false' : 'true') + '"' +
+        ' AppliedObjectStyle="ObjectStyle/$ID/[None]" FillColor="Swatch/None" StrokeColor="Swatch/None" StrokeWeight="0" ItemTransform="' + mat(local) + '">';
+      x += pathPointsXml(rectPts(w, h));
+      x += transparencyXml(node, 1, 1, true);
+      x += '<TextFramePreference TextColumnCount="1" FirstBaselineOffset="FixedHeight" MinimumFirstBaselineOffset="' + n(baseline) + '" VerticalJustification="' + vj + '"' + autosize + '>' +
+        '<Properties><InsetSpacing type="list"><ListItem type="unit">0</ListItem><ListItem type="unit">0</ListItem><ListItem type="unit">0</ListItem><ListItem type="unit">0</ListItem></InsetSpacing></Properties></TextFramePreference>';
+      return x + '</TextFrame>';
+    }
+
+    // --- duyệt cây ---
+    function childrenXml(list, parentAbs) {
+      return (list || []).map(function (c) { return nodeXml(c, parentAbs); }).join('');
+    }
+
+    function nodeXml(node, parentAbs) {
+      if (!node) return '';
+      switch (node.kind) {
+        case 'text': return textXml(node, parentAbs);
+        case 'rect': case 'ellipse': case 'path': return leafXml(node, parentAbs, '');
+        case 'group': return groupXml(node.name, parentAbs, childrenXml(node.children, I), node);
+        case 'mask': {
+          var shape = node.shape;
+          var geo = geoOf(shape);
+          var abs = geo.kind === 'path' ? I : shape.m;
+          var inside = groupXml(node.name + ' (nội dung)', abs, childrenXml(node.children, I), null);
+          return shapeXml({ name: node.name, visible: true, opacity: 1 }, geo, null, parentAbs, abs, false, false, inside, node.name);
+        }
+        case 'frame': {
+          var kids = childrenXml(node.children, I);
+          var fills = node.fills || [];
+          var hasBg = fills.length || (node.strokes && node.strokes.length);
+          var geo2 = geoOf(node);
+          var abs2 = geo2.kind === 'path' ? I : node.m;
+          if (node.clips && kids) {
+            // Frame cắt nội dung: hình khung chứa nhóm nội dung (giống "Paste Into" của InDesign).
+            // Một khung chỉ chứa được một nội dung, nên fill ảnh được tách thành khung ảnh riêng nằm dưới các layer con.
+            var imgs = fills.filter(function (p) { return p.type === 'IMAGE'; });
+            if (imgs.length) {
+              fills = fills.filter(function (p) { return p.type !== 'IMAGE'; });
+              kids = imgs.map(function (p, k) {
+                return shapeXml({ name: node.name, visible: true, opacity: 1 }, geo2, p, I, abs2, false, false, '', node.name + ' (ảnh' + (k ? ' ' + (k + 1) : '') + ')');
+              }).join('') + kids;
+            }
+            var inner = groupXml(node.name + ' (nội dung)', abs2, kids, null);
+            if (fills.length <= 1) return shapeXml(node, geo2, fills[0], parentAbs, abs2, true, true, inner);
+            // Nhiều lớp fill: các lớp nền nằm dưới, khung cắt trong suốt ở trên.
+            var bg = leafXml(Object.assign({}, node, { kind: 'rect', effects: [], opacity: 1, strokes: null }), I, '');
+            var clip = shapeXml({ name: node.name, visible: true, opacity: 1, strokes: node.strokes, strokeWeight: node.strokeWeight, strokeAlign: node.strokeAlign }, geo2, null, I, abs2, true, false, inner);
+            return groupXml(node.name, parentAbs, bg + clip, node);
+          }
+          var bgx = hasBg ? leafXml(Object.assign({}, node, { kind: 'rect', effects: [], opacity: 1, name: node.name + ' (nền)' }), I, '') : '';
+          if (!bgx && !kids) return '';
+          return groupXml(node.name, parentAbs, bgx + kids, node);
+        }
+      }
+      return '';
+    }
+
+    // --- trang ---
+    var spreads = [];
+    var maxW = 0, maxH = 0;
+    (doc.roots || []).forEach(function (root, i) {
+      var W = root.w, H = root.h;
+      maxW = Math.max(maxW, W); maxH = Math.max(maxH, H);
+      // Toạ độ page: gốc ở góc trái trên của frame gốc.
+      var toPage = inv(root.m);
+      var r = JSON.parse(JSON.stringify(root));
+      transformTree(r, toPage);
+      var pageItems;
+      // Nền trang
+      // Theo quy ước InDesign, gốc toạ độ spread nằm ở tâm trang (trang 1 trang, không đối mặt).
+      var P = [[1, 0, W / 2], [0, 1, H / 2]];
+      var bg = (r.fills && r.fills.length) ? leafXml(Object.assign({}, r, { kind: 'rect', effects: [], opacity: 1, name: r.name + ' (nền)', strokes: null, radius: null }), P, '') : '';
+      pageItems = bg + childrenXml(r.children, P);
+      var guides = '';
+      if (opts.guides !== false && root.guides) {
+        (root.guides.v || []).forEach(function (x) {
+          guides += '<Guide Self="' + uid('gd') + '" OverriddenPageItemProps="" Orientation="Vertical" Location="' + n(x - root.m[0][2] - W / 2) + '" FitToPage="true" ViewThreshold="0" Locked="false" ItemLayer="layer1" PageIndex="0" GuideType="Ruler" GuideZone="0"/>';
+        });
+        (root.guides.h || []).forEach(function (y) {
+          guides += '<Guide Self="' + uid('gd') + '" OverriddenPageItemProps="" Orientation="Horizontal" Location="' + n(y - root.m[1][2] - H / 2) + '" FitToPage="true" ViewThreshold="0" Locked="false" ItemLayer="layer1" PageIndex="0" GuideType="Ruler" GuideZone="0"/>';
+        });
+      }
+      var sid = 'sp' + (i + 1);
+      var pid = uid('pg');
+      var xml = '<Spread Self="' + sid + '" PageCount="1" BindingLocation="0" AllowPageShuffle="true" ItemTransform="1 0 0 1 0 0" ShowMasterItems="true" PageTransitionType="None">' +
+        '<FlattenerPreference LineArtAndTextResolution="300" GradientAndMeshResolution="150" ClipComplexRegions="false" ConvertAllStrokesToOutlines="false" ConvertAllTextToOutlines="false"><Properties><RasterVectorBalance type="double">50</RasterVectorBalance></Properties></FlattenerPreference>' +
+        '<Page Self="' + pid + '" Name="' + esc(root.name || String(i + 1)) + '" AppliedTrapPreset="TrapPreset/$ID/kDefaultTrapStyleName" AppliedMaster="n" OverrideList="" TabOrder="" GridStartingPoint="TopOutside" UseMasterGrid="true" GeometricBounds="0 0 ' + n(H) + ' ' + n(W) + '" ItemTransform="1 0 0 1 ' + n(-W / 2) + ' ' + n(-H / 2) + '" MasterPageTransform="1 0 0 1 0 0">' +
+        '<Properties><PageColor type="enumeration">UseMasterColor</PageColor></Properties>' +
+        '<MarginPreference ColumnCount="1" ColumnGutter="0" Top="0" Bottom="0" Left="0" Right="0" ColumnDirection="Horizontal" ColumnsPositions="0 ' + n(W) + '"/></Page>' +
+        pageItems + guides + '</Spread>';
+      spreads.push({ id: sid, xml: xml });
+    });
+
+    // Đổi toàn bộ toạ độ tuyệt đối của cây sang toạ độ page (nhân trái với T).
+    function transformTree(nd, T) {
+      if (!nd) return;
+      if (nd.m) nd.m = mul(T, nd.m);
+      function tp(cmdsList) {
+        (cmdsList || []).forEach(function (p) {
+          (p.cmds || []).forEach(function (c) {
+            for (var k = 1; k + 1 < c.length; k += 2) { var q = ap(T, c[k], c[k + 1]); c[k] = q[0]; c[k + 1] = q[1]; }
+          });
+        });
+      }
+      tp(nd.paths); tp(nd.bgPaths);
+      function tpaint(list) {
+        (list || []).forEach(function (p) {
+          if (p.gx) p.gx = mul(T, p.gx);
+          if (p.start) p.start = ap(T, p.start[0], p.start[1]);
+          if (p.end) p.end = ap(T, p.end[0], p.end[1]);
+        });
+      }
+      tpaint(nd.fills); tpaint(nd.strokes);
+      if (nd.shape) transformTree(nd.shape, T);
+      (nd.children || []).forEach(function (c) { transformTree(c, T); });
+    }
+
+    // ---------- các file XML ----------
+    var HDR = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
+    var PKG = 'xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="8.0"';
+
+    var graphic = HDR + '<idPkg:Graphic ' + PKG + '>' +
+      '<Color Self="Color/Black" Model="Process" Space="CMYK" ColorValue="0 0 0 100" ColorOverride="Specialblack" AlternateSpace="NoAlternateColor" AlternateColorValue="" Name="Black" ColorEditable="false" ColorRemovable="false" Visible="true" SwatchCreatorID="7937"/>' +
+      '<Color Self="Color/Paper" Model="Process" Space="CMYK" ColorValue="0 0 0 0" ColorOverride="Specialpaper" AlternateSpace="NoAlternateColor" AlternateColorValue="" Name="Paper" ColorEditable="true" ColorRemovable="false" Visible="true" SwatchCreatorID="7937"/>' +
+      '<Color Self="Color/Registration" Model="Registration" Space="CMYK" ColorValue="100 100 100 100" ColorOverride="Specialregistration" AlternateSpace="NoAlternateColor" AlternateColorValue="" Name="Registration" ColorEditable="false" ColorRemovable="false" Visible="true" SwatchCreatorID="7937"/>' +
+      colorXml.join('') +
+      '<Swatch Self="Swatch/None" Name="None" ColorEditable="false" ColorRemovable="false" Visible="true" SwatchCreatorID="7937"/>' +
+      gradXml.join('') +
+      '<StrokeStyle Self="StrokeStyle/$ID/Solid" Name="$ID/Solid"/><StrokeStyle Self="StrokeStyle/$ID/Dashed" Name="$ID/Dashed"/>' +
+      '</idPkg:Graphic>';
+
+    var styles = HDR + '<idPkg:Styles ' + PKG + '>' +
+      '<RootCharacterStyleGroup Self="u79"><CharacterStyle Self="CharacterStyle/$ID/[No character style]" Imported="false" Name="$ID/[No character style]"/></RootCharacterStyleGroup>' +
+      '<RootParagraphStyleGroup Self="u78"><ParagraphStyle Self="ParagraphStyle/$ID/[No paragraph style]" Name="$ID/[No paragraph style]" Imported="false" FillColor="Color/Black" FontStyle="Regular" PointSize="12" HorizontalScale="100" KerningMethod="$ID/Metrics" Ligatures="true" PageNumberType="AutoPageNumber" StrokeWeight="1" Tracking="0" Composer="HL Composer" DropCapCharacters="0" DropCapLines="0" BaselineShift="0" Capitalization="Normal" StrokeColor="Swatch/None" HyphenateLadderLimit="3" VerticalScale="100" LeftIndent="0" RightIndent="0" FirstLineIndent="0" AutoLeading="120" AppliedLanguage="$ID/English: USA" Hyphenation="false" Justification="LeftAlign" SpaceBefore="0" SpaceAfter="0"><Properties><Leading type="enumeration">Auto</Leading><AppliedFont type="string">Minion Pro</AppliedFont></Properties></ParagraphStyle></RootParagraphStyleGroup>' +
+      '<TOCStyle Self="TOCStyle/$ID/DefaultTOCStyleName" Title="Contents" Name="$ID/DefaultTOCStyleName"/>' +
+      '<RootCellStyleGroup Self="u8a"><CellStyle Self="CellStyle/$ID/[None]" Name="$ID/[None]"/></RootCellStyleGroup>' +
+      '<RootTableStyleGroup Self="u8c"><TableStyle Self="TableStyle/$ID/[No table style]" Name="$ID/[No table style]"/></RootTableStyleGroup>' +
+      '<RootObjectStyleGroup Self="u97"><ObjectStyle Self="ObjectStyle/$ID/[None]" Name="$ID/[None]" FillColor="Swatch/None" StrokeColor="Swatch/None" StrokeWeight="0"/></RootObjectStyleGroup>' +
+      '</idPkg:Styles>';
+
+    var prefs = HDR + '<idPkg:Preferences ' + PKG + '>' +
+      '<DocumentPreference PageHeight="' + n(maxH || 600) + '" PageWidth="' + n(maxW || 800) + '" PagesPerDocument="' + spreads.length + '" FacingPages="false" DocumentBleedTopOffset="0" DocumentBleedBottomOffset="0" DocumentBleedInsideOrLeftOffset="0" DocumentBleedOutsideOrRightOffset="0" DocumentBleedUniformSize="true" AllowPageShuffle="true" PageBinding="LeftToRight" ColumnDirection="Horizontal" Intent="WebIntent"/>' +
+      '<ViewPreference HorizontalMeasurementUnits="Pixels" VerticalMeasurementUnits="Pixels" TypographicMeasurementUnits="Points" TextSizeMeasurementUnits="Points" PrintDialogMeasurementUnits="Points" LineMeasurementUnits="Points" PointsPerInch="72" RulerOrigin="PageOrigin"/>' +
+      '<TransparencyPreference BlendingSpace="RGB"/>' +
+      '</idPkg:Preferences>';
+
+    var fonts = HDR + '<idPkg:Fonts ' + PKG + '></idPkg:Fonts>';
+
+    var designmap = HDR + '<?aid style="50" type="document" readerVersion="6.0" featureSet="257" product="8.0(370)" ?>\n' +
+      '<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="8.0" Self="d" StoryList="' + stories.map(function (s) { return s.id; }).join(' ') + '" Name="' + esc((doc.source && doc.source.file) || 'Figma') + '" ZeroPoint="0 0" ActiveLayer="layer1" CMYKProfile="$ID/" RGBProfile="sRGB IEC61966-2.1" SolidColorIntent="UseColorSettings" AfterBlendingIntent="UseColorSettings" DefaultImageIntent="UseColorSettings" RGBPolicy="PreserveEmbeddedProfiles" CMYKPolicy="CombinationOfPreserveAndSafeCmyk" AccurateLABSpots="false">' +
+      '<Language Self="Language/$ID/English%3a USA" Name="$ID/English: USA" SingleQuotes="‘’" DoubleQuotes="“”" PrimaryLanguageName="$ID/English" SublanguageName="$ID/USA" Id="269" HyphenationVendor="Hunspell" SpellingVendor="Hunspell"/>' +
+      '<idPkg:Graphic src="Resources/Graphic.xml"/><idPkg:Fonts src="Resources/Fonts.xml"/><idPkg:Styles src="Resources/Styles.xml"/><idPkg:Preferences src="Resources/Preferences.xml"/>' +
+      '<Layer Self="layer1" Name="Layer 1" Visible="true" Locked="false" IgnoreWrap="false" ShowGuides="true" LockGuides="false" UI="true" Expendable="true" Printable="true"><Properties><LayerColor type="enumeration">LightBlue</LayerColor></Properties></Layer>' +
+      spreads.map(function (s) { return '<idPkg:Spread src="Spreads/Spread_' + s.id + '.xml"/>'; }).join('') +
+      '<idPkg:BackingStory src="XML/BackingStory.xml"/>' +
+      stories.map(function (s) { return '<idPkg:Story src="Stories/Story_' + s.id + '.xml"/>'; }).join('') +
+      '</Document>';
+
+    var files = [
+      { name: 'mimetype', data: 'application/vnd.adobe.indesign-idml-package' },
+      { name: 'designmap.xml', data: designmap },
+      { name: 'META-INF/container.xml', data: HDR + '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="designmap.xml" media-type="text/xml"/></rootfiles></container>' },
+      { name: 'Resources/Graphic.xml', data: graphic },
+      { name: 'Resources/Fonts.xml', data: fonts },
+      { name: 'Resources/Styles.xml', data: styles },
+      { name: 'Resources/Preferences.xml', data: prefs },
+      { name: 'XML/BackingStory.xml', data: HDR + '<idPkg:BackingStory ' + PKG + '><XmlStory Self="ubs" AppliedTOCStyle="n" TrackChanges="false" StoryTitle="$ID/" AppliedNamedGrid="n"><ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]"><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"/></ParagraphStyleRange></XmlStory></idPkg:BackingStory>' }
+    ];
+    spreads.forEach(function (s) {
+      files.push({ name: 'Spreads/Spread_' + s.id + '.xml', data: HDR + '<idPkg:Spread ' + PKG + '>' + s.xml + '</idPkg:Spread>' });
+    });
+    stories.forEach(function (s) {
+      files.push({ name: 'Stories/Story_' + s.id + '.xml', data: HDR + '<idPkg:Story ' + PKG + '>' + s.xml + '</idPkg:Story>' });
+    });
+
+    return {
+      idml: zip(files),
+      files: files,
+      images: imgCache.filter(Boolean),
+      warnings: warnings
+    };
+  }
+
+  return { build: build, zip: zip, imageInfo: imageInfo };
+})();
+
+if (typeof module !== 'undefined') module.exports = IDML;
+// END idml-writer
+</script>
 <script>
 const MAX_IMAGE_SIDE = 4096;
 const statusEl = document.getElementById('status');
 const btn = document.getElementById('go');
+const btnIdml = document.getElementById('goIdml');
+let mode = 'figaf';
 
 function setStatus(text, isErr) {
   statusEl.textContent = text;
   statusEl.className = isErr ? 'err' : '';
 }
 
-btn.onclick = function () {
-  btn.disabled = true;
+function startExport(m) {
+  mode = m;
+  btn.disabled = btnIdml.disabled = true;
   setStatus('Đang đọc dữ liệu Figma…');
   parent.postMessage({ pluginMessage: { type: 'export' } }, '*');
-};
+}
+btn.onclick = function () { startExport('figaf'); };
+btnIdml.onclick = function () { startExport('idml'); };
+
+function download(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+// Bản thử: dựng file .idml ngay trong plugin, Affinity mở bằng File → Open.
+function exportIdml(msg) {
+  const res = IDML.build(msg.doc, msg.images, {});
+  const name = msg.fileName.replace(/\.figaf$/, '') + '.idml';
+  download(new Blob([res.idml], { type: 'application/vnd.adobe.indesign-idml-package' }), name);
+  const s = msg.doc.stats;
+  const warns = msg.doc.warnings.concat(res.warnings);
+  let summary = 'Đã xuất ' + name + ' (' + (res.idml.length / 1048576).toFixed(1) + ' MB).\n' +
+    'Frame: ' + (s.frame || 0) + ', text: ' + (s.text || 0) + ', hình: ' + ((s.rect || 0) + (s.ellipse || 0) + (s.path || 0)) +
+    ', ảnh: ' + msg.images.filter(Boolean).length + '.\nMở bằng File → Open trong Affinity.';
+  if (warns.length) summary += '\n\nCảnh báo (' + warns.length + '):\n- ' + warns.slice(0, 30).join('\n- ');
+  setStatus(summary);
+  parent.postMessage({ pluginMessage: { type: 'done', fileName: name } }, '*');
+}
 
 // Giải mã PNG/JPEG thành điểm ảnh RGBA thô (Affinity script không tự giải mã được PNG).
 async function decodeImage(bytes) {
@@ -90,8 +771,13 @@ window.onmessage = async function (event) {
     setStatus(msg.message);
   } else if (msg.type === 'error') {
     setStatus(msg.message, true);
-    btn.disabled = false;
+    btn.disabled = btnIdml.disabled = false;
   } else if (msg.type === 'payload') {
+    if (mode === 'idml') {
+      try { exportIdml(msg); } catch (e) { setStatus('Lỗi khi tạo file IDML: ' + (e && e.message ? e.message : e), true); }
+      btn.disabled = btnIdml.disabled = false;
+      return;
+    }
     try {
       const blob = await buildFile(msg.doc, msg.images);
       const a = document.createElement('a');
@@ -110,7 +796,7 @@ window.onmessage = async function (event) {
     } catch (e) {
       setStatus('Lỗi khi tạo file: ' + (e && e.message ? e.message : e), true);
     }
-    btn.disabled = false;
+    btn.disabled = btnIdml.disabled = false;
   }
 };
 </script>

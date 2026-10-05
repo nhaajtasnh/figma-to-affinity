@@ -5,7 +5,7 @@
 const FORMAT_VERSION = 1;
 const PLUGIN_VERSION = '0.2.0-beta';
 
-figma.showUI(__html__, { width: 360, height: 300 });
+figma.showUI(__html__, { width: 380, height: 320 });
 
 const warnings = [];
 let imageList = [];      // [{ hash }]
